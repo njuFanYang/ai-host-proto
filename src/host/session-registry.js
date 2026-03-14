@@ -107,6 +107,11 @@ class SessionRegistry {
   }
 
   createApproval(hostSessionId, input) {
+    const session = this.getSession(hostSessionId);
+    if (!session) {
+      return null;
+    }
+
     const request = {
       requestId: createId("approval"),
       hostSessionId,
@@ -119,6 +124,9 @@ class SessionRegistry {
     };
 
     this.approvals.set(request.requestId, request);
+    this.updateSession(hostSessionId, {
+      status: "waiting_approval"
+    });
     this.appendEvent(hostSessionId, {
       kind: "approval_request",
       controllability: input.controllability || "observed",
@@ -140,6 +148,9 @@ class SessionRegistry {
     approval.status = "resolved";
     approval.decision = decision;
     approval.resolvedAt = nowIso();
+    this.updateSession(approval.hostSessionId, {
+      status: decision.decision === "deny" ? "failed" : "running"
+    });
     this.appendEvent(approval.hostSessionId, {
       kind: "approval_result",
       controllability: decision.controllability || "observed",

@@ -1,11 +1,15 @@
 const http = require("node:http");
 const path = require("node:path");
 
+const { ApprovalService } = require("./host/approval-service");
 const { CodexCliManager } = require("./host/codex-cli");
+const { PolicyEngine } = require("./host/policy-engine");
 const { SessionRegistry } = require("./host/session-registry");
 
 const projectRoot = path.resolve(__dirname, "..");
 const registry = new SessionRegistry({ projectRoot });
+const policyEngine = new PolicyEngine();
+const approvalService = new ApprovalService({ registry, policyEngine });
 const manager = new CodexCliManager({ registry, projectRoot });
 
 const server = http.createServer(async (req, res) => {
@@ -24,6 +28,16 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, {
         sessions: registry.listSessions()
       });
+    }
+
+    if (req.method === "GET" && url.pathname.startsWith("/approvals/")) {
+      const requestId = decodeURIComponent(url.pathname.split("/")[2]);
+      const approval = registry.getApproval(requestId);
+      if (!approval) {
+        return sendJson(res, 404, { error: "approval_not_found" });
+      }
+
+      return sendJson(res, 200, { approval });
     }
 
     if (req.method === "POST" && url.pathname === "/sessions/cli") {
@@ -93,36 +107,19 @@ const server = http.createServer(async (req, res) => {
       });
     }
 
+    if (req.method === "POST" && url.pathname.startsWith("/sessions/") && url.pathname.endsWith("/approvals")) {
+      const hostSessionId = decodeURIComponent(url.pathname.split("/")[2]);
+      const body = await readJson(req);
+      const result = approvalService.createApproval(hostSessionId, body || {});
+      return sendJson(res, 201, result);
+    }
+
     if (req.method === "POST" && url.pathname.startsWith("/approvals/") && url.pathname.endsWith("/decision")) {
       const requestId = decodeURIComponent(url.pathname.split("/")[2]);
       const body = await readJson(req);
-      const approval = registry.getApproval(requestId);
-      if (!approval) {
-        return sendJson(res, 404, { error: "approval_not_found" });
-      }
-
-      const session = registry.getSession(approval.hostSessionId);
-      if (!session) {
-        return sendJson(res, 404, { error: "session_not_found" });
-      }
-
-      if (session.transportCapabilities.autoHitl !== "supported") {
-        return sendJson(res, 409, {
-          error: "needs-human-fallback",
-          hostSessionId: session.hostSessionId
-        });
-      }
-
-      registry.resolveApproval(requestId, {
-        decision: body.decision || "escalate",
-        decidedBy: body.decidedBy || "human",
-        reason: body.reason || null,
-        controllability: "controllable"
-      });
-
-      return sendJson(res, 200, {
-        ok: true
-      });
+      const result = approvalService.resolveApproval(requestId, body || {});
+      const statusCode = result.ok ? 200 : 409;
+      return sendJson(res, statusCode, result);
     }
 
     return sendJson(res, 404, { error: "not_found" });

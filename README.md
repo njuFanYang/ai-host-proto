@@ -18,6 +18,7 @@
 - `Codex CLI` 结构化 `exec-json` 启动与续写
 - `Codex CLI` TTY 外部终端启动
 - 实验性 `codex-wrapper`
+- 基础 HiTL policy engine
 - 基础测试
 
 已验证：
@@ -26,16 +27,17 @@
 - Host 从 JSONL 事件流中绑定 `upstreamSessionId`
 - 对同一结构化 session 继续发送消息
 - 结构化 session 事件回放
+- 低风险结构化审批自动批准
+- 高风险结构化审批人工决策
+- IDE 路径的人类 fallback 判定
 - wrapper 路径的预注册和回收
 
 未实现或仅 PoC：
 
 - `sdk/thread` transport
-- 真正的 HiTL policy engine
 - VS Code 正式 extension
 - app-server 完整自动审批回注
 - TTY 模式的完整事件采集
-
 ## 目录结构
 
 ```txt
@@ -133,7 +135,45 @@ Invoke-RestMethod http://127.0.0.1:7788/sessions/<hostSessionId>
 Invoke-RestMethod http://127.0.0.1:7788/sessions/<hostSessionId>/events
 ```
 
-### 4. 创建 IDE wrapper session
+### 4. 创建 approval 请求
+
+```powershell
+$body = @{
+  riskLevel = "low"
+  actionType = "shell"
+  summary = "read-only command"
+} | ConvertTo-Json
+
+Invoke-RestMethod `
+  -Method Post `
+  -Uri "http://127.0.0.1:7788/sessions/<hostSessionId>/approvals" `
+  -ContentType "application/json" `
+  -Body $body
+```
+
+当前行为：
+
+- `exec-json` 结构化 session 上，低风险请求默认自动批准
+- `exec-json` 结构化 session 上，中高风险请求默认进入人工 fallback
+- `app-server` / IDE 路径默认进入人工 fallback
+
+### 5. 人工提交 approval 决策
+
+```powershell
+$body = @{
+  decision = "approve"
+  decidedBy = "human"
+  reason = "manual override"
+} | ConvertTo-Json
+
+Invoke-RestMethod `
+  -Method Post `
+  -Uri "http://127.0.0.1:7788/approvals/<requestId>/decision" `
+  -ContentType "application/json" `
+  -Body $body
+```
+
+### 6. 创建 IDE wrapper session
 
 ```powershell
 $body = @{
@@ -233,9 +273,8 @@ node --test
 - `exec-json` 是当前唯一真正跑通的主路径
 - TTY 模式只保证开外部终端和基础观测
 - IDE 仍是实验性 wrapper 集成
-- 还没有完整的审批策略引擎
+- 审批引擎目前只有最小规则集
 - 还没有远程部署、多用户和鉴权
-
 ## 下一步建议
 
 按 `docs/plan.md` 的顺序，下一阶段应优先做：
