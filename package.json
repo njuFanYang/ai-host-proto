@@ -1,0 +1,10 @@
+{
+  "name": "ai-host-proto",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local Codex host prototype",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test"
+  }
+}

@@ -1,0 +1,208 @@
+const fs = require("node:fs");
+const path = require("node:path");
+
+const {
+  createHostSessionId,
+  createId,
+  ensureDir,
+  nowIso,
+  resolveDataRoot
+} = require("./utils");
+
+class SessionRegistry {
+  constructor(options = {}) {
+    this.projectRoot = options.projectRoot || process.cwd();
+    this.dataRoot = options.dataRoot || resolveDataRoot(this.projectRoot);
+    this.sessionsDir = path.join(this.dataRoot, "sessions");
+    ensureDir(this.sessionsDir);
+    this.records = new Map();
+    this.events = new Map();
+    this.approvals = new Map();
+  }
+
+  createSession(input) {
+    const hostSessionId = createHostSessionId(input.source);
+    const timestamp = nowIso();
+    const record = {
+      hostSessionId,
+      source: input.source,
+      transport: input.transport,
+      upstreamSessionId: null,
+      workspaceRoot: input.workspaceRoot,
+      status: "starting",
+      registrationState: "pending_upstream",
+      createdAt: timestamp,
+      lastActivityAt: timestamp,
+      controlMode: "managed",
+      runtime: input.runtime || {},
+      metadata: input.metadata || {},
+      transportCapabilities: input.transportCapabilities || defaultCapabilities(input.transport)
+    };
+
+    this.records.set(hostSessionId, record);
+    this.events.set(hostSessionId, []);
+    this.persistSession(hostSessionId);
+    return record;
+  }
+
+  getSession(hostSessionId) {
+    return this.records.get(hostSessionId) || null;
+  }
+
+  listSessions() {
+    return Array.from(this.records.values()).sort((left, right) =>
+      left.createdAt < right.createdAt ? 1 : -1
+    );
+  }
+
+  updateSession(hostSessionId, patch) {
+    const record = this.getSession(hostSessionId);
+    if (!record) {
+      return null;
+    }
+
+    Object.assign(record, patch, { lastActivityAt: nowIso() });
+    this.persistSession(hostSessionId);
+    return record;
+  }
+
+  bindUpstreamSession(hostSessionId, upstreamSessionId) {
+    return this.updateSession(hostSessionId, {
+      upstreamSessionId,
+      registrationState: "bound"
+    });
+  }
+
+  failRegistration(hostSessionId, reason) {
+    return this.updateSession(hostSessionId, {
+      registrationState: "failed",
+      status: "failed",
+      failureReason: reason
+    });
+  }
+
+  appendEvent(hostSessionId, input) {
+    const record = this.getSession(hostSessionId);
+    if (!record) {
+      return null;
+    }
+
+    const event = {
+      eventId: createId("event"),
+      hostSessionId,
+      kind: input.kind,
+      controllability: input.controllability || "observed",
+      timestamp: nowIso(),
+      payload: input.payload || {}
+    };
+
+    this.events.get(hostSessionId).push(event);
+    record.lastActivityAt = event.timestamp;
+    this.persistSession(hostSessionId);
+    return event;
+  }
+
+  listEvents(hostSessionId) {
+    return (this.events.get(hostSessionId) || []).slice();
+  }
+
+  createApproval(hostSessionId, input) {
+    const request = {
+      requestId: createId("approval"),
+      hostSessionId,
+      riskLevel: input.riskLevel || "medium",
+      actionType: input.actionType || "unknown",
+      summary: input.summary || "",
+      rawRequest: input.rawRequest || {},
+      status: "pending",
+      createdAt: nowIso()
+    };
+
+    this.approvals.set(request.requestId, request);
+    this.appendEvent(hostSessionId, {
+      kind: "approval_request",
+      controllability: input.controllability || "observed",
+      payload: request
+    });
+    return request;
+  }
+
+  getApproval(requestId) {
+    return this.approvals.get(requestId) || null;
+  }
+
+  resolveApproval(requestId, decision) {
+    const approval = this.getApproval(requestId);
+    if (!approval) {
+      return null;
+    }
+
+    approval.status = "resolved";
+    approval.decision = decision;
+    approval.resolvedAt = nowIso();
+    this.appendEvent(approval.hostSessionId, {
+      kind: "approval_result",
+      controllability: decision.controllability || "observed",
+      payload: {
+        requestId,
+        decision: decision.decision,
+        decidedBy: decision.decidedBy,
+        reason: decision.reason || null
+      }
+    });
+    return approval;
+  }
+
+  persistSession(hostSessionId) {
+    const record = this.getSession(hostSessionId);
+    if (!record) {
+      return;
+    }
+
+    const filePath = path.join(this.sessionsDir, `${hostSessionId}.json`);
+    const payload = {
+      record,
+      events: this.listEvents(hostSessionId)
+    };
+    fs.writeFileSync(filePath, JSON.stringify(payload, null, 2));
+  }
+}
+
+function defaultCapabilities(transport) {
+  switch (transport) {
+    case "exec-json":
+      return {
+        sessionRegistration: "supported",
+        outputCollection: "complete",
+        messageInjection: "supported",
+        autoHitl: "supported"
+      };
+    case "sdk/thread":
+      return {
+        sessionRegistration: "supported",
+        outputCollection: "complete",
+        messageInjection: "supported",
+        autoHitl: "supported"
+      };
+    case "app-server":
+      return {
+        sessionRegistration: "supported",
+        outputCollection: "complete",
+        messageInjection: "supported",
+        autoHitl: "poc"
+      };
+    case "tty":
+    default:
+      return {
+        sessionRegistration: "supported",
+        outputCollection: "limited",
+        messageInjection: "conditional",
+        autoHitl: "conditional"
+      };
+  }
+}
+
+module.exports = {
+  SessionRegistry,
+  defaultCapabilities
+};
