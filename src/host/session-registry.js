@@ -1,3 +1,4 @@
+const { EventEmitter } = require("node:events");
 const fs = require("node:fs");
 const path = require("node:path");
 
@@ -18,7 +19,16 @@ class SessionRegistry {
     this.records = new Map();
     this.events = new Map();
     this.approvals = new Map();
+    this.stream = new EventEmitter();
+    this.stream.setMaxListeners(0);
     this.loadPersistedSessions();
+  }
+
+  subscribe(listener) {
+    this.stream.on("message", listener);
+    return () => {
+      this.stream.off("message", listener);
+    };
   }
 
   createSession(input) {
@@ -43,6 +53,12 @@ class SessionRegistry {
     this.records.set(hostSessionId, record);
     this.events.set(hostSessionId, []);
     this.persistSession(hostSessionId);
+    this.emitMessage({
+      type: "session",
+      action: "created",
+      hostSessionId,
+      session: { ...record }
+    });
     return record;
   }
 
@@ -64,6 +80,12 @@ class SessionRegistry {
 
     Object.assign(record, patch, { lastActivityAt: nowIso() });
     this.persistSession(hostSessionId);
+    this.emitMessage({
+      type: "session",
+      action: "updated",
+      hostSessionId,
+      session: { ...record }
+    });
     return record;
   }
 
@@ -100,6 +122,11 @@ class SessionRegistry {
     this.events.get(hostSessionId).push(event);
     record.lastActivityAt = event.timestamp;
     this.persistSession(hostSessionId);
+    this.emitMessage({
+      type: "event",
+      hostSessionId,
+      event: { ...event }
+    });
     return event;
   }
 
@@ -132,6 +159,12 @@ class SessionRegistry {
       kind: "approval_request",
       controllability: input.controllability || "observed",
       payload: request
+    });
+    this.emitMessage({
+      type: "approval",
+      action: "created",
+      hostSessionId,
+      approval: { ...request }
     });
     return request;
   }
@@ -177,6 +210,12 @@ class SessionRegistry {
         decidedBy: decision.decidedBy,
         reason: decision.reason || null
       }
+    });
+    this.emitMessage({
+      type: "approval",
+      action: "resolved",
+      hostSessionId: approval.hostSessionId,
+      approval: { ...approval }
     });
     return approval;
   }
@@ -241,6 +280,10 @@ class SessionRegistry {
         };
       }
     }
+  }
+
+  emitMessage(message) {
+    this.stream.emit("message", message);
   }
 }
 

@@ -43,6 +43,13 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, { approvals });
     }
 
+    if (req.method === "GET" && url.pathname === "/approvals/stream") {
+      return openApprovalStream(req, res, {
+        hostSessionId: url.searchParams.get("hostSessionId") || undefined,
+        status: url.searchParams.get("status") || undefined
+      });
+    }
+
     if (req.method === "GET" && url.pathname.startsWith("/approvals/")) {
       const requestId = decodeURIComponent(url.pathname.split("/")[2]);
       const approval = registry.getApproval(requestId);
@@ -99,6 +106,10 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "GET" && url.pathname.startsWith("/sessions/")) {
       const hostSessionId = decodeURIComponent(url.pathname.split("/")[2]);
+      if (url.pathname.endsWith("/events/stream")) {
+        return openSessionStream(req, res, hostSessionId);
+      }
+
       if (url.pathname.endsWith("/events")) {
         manager.refreshSession(hostSessionId);
         return sendJson(res, 200, {
@@ -166,6 +177,93 @@ server.listen(port, "127.0.0.1", () => {
   process.stdout.write(`ai-host-proto listening on http://127.0.0.1:${port}\n`);
 });
 
+function openSessionStream(req, res, hostSessionId) {
+  const session = manager.refreshSession(hostSessionId) || registry.getSession(hostSessionId);
+  if (!session) {
+    return sendJson(res, 404, { error: "session_not_found" });
+  }
+
+  openSse(req, res, (send) => {
+    send("snapshot", {
+      session,
+      events: registry.listEvents(hostSessionId).slice(-20),
+      approvals: approvalService.listApprovals({ hostSessionId })
+    });
+
+    return registry.subscribe((message) => {
+      if (message.hostSessionId !== hostSessionId) {
+        return;
+      }
+
+      if (message.type === "session") {
+        send("session", message);
+        return;
+      }
+
+      if (message.type === "event") {
+        send("event", message);
+        return;
+      }
+
+      if (message.type === "approval") {
+        send("approval", message);
+      }
+    });
+  });
+}
+
+function openApprovalStream(req, res, filter = {}) {
+  openSse(req, res, (send) => {
+    send("snapshot", {
+      approvals: approvalService.listApprovals(filter)
+    });
+
+    return registry.subscribe((message) => {
+      if (message.type !== "approval") {
+        return;
+      }
+
+      if (filter.hostSessionId && message.hostSessionId !== filter.hostSessionId) {
+        return;
+      }
+
+      if (filter.status && message.approval.status !== filter.status) {
+        return;
+      }
+
+      send("approval", message);
+    });
+  });
+}
+
+function openSse(req, res, onOpen) {
+  res.writeHead(200, {
+    "content-type": "text/event-stream; charset=utf-8",
+    "cache-control": "no-cache, no-transform",
+    connection: "keep-alive",
+    "x-accel-buffering": "no"
+  });
+
+  res.write(": connected\n\n");
+  const keepAlive = setInterval(() => {
+    res.write(": keep-alive\n\n");
+  }, 15000);
+
+  const send = (eventName, payload) => {
+    res.write(`event: ${eventName}\n`);
+    res.write(`data: ${JSON.stringify(payload)}\n\n`);
+  };
+
+  const unsubscribe = onOpen(send);
+  req.on("close", () => {
+    clearInterval(keepAlive);
+    if (typeof unsubscribe === "function") {
+      unsubscribe();
+    }
+    res.end();
+  });
+}
+
 function sendJson(res, statusCode, payload) {
   res.writeHead(statusCode, {
     "content-type": "application/json; charset=utf-8"
@@ -194,4 +292,3 @@ function readJson(req) {
     req.on("error", reject);
   });
 }
-

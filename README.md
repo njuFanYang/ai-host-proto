@@ -214,6 +214,16 @@ Invoke-RestMethod http://127.0.0.1:7788/sessions/<hostSessionId>/approvals
 Invoke-RestMethod http://127.0.0.1:7788/approvals
 ```
 
+流式监督接口：
+
+```txt
+GET /sessions/<hostSessionId>/events/stream
+GET /approvals/stream
+GET /approvals/stream?hostSessionId=<hostSessionId>
+```
+
+这两个 SSE 端点更适合给自定义 UI、监控代理和后续 IDE 面板做实时订阅。
+
 人工提交 approval 决策：
 
 ```powershell
