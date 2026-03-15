@@ -60,8 +60,7 @@ test("ApprovalService requests human fallback for app-server sessions", () => {
   assert.equal(result.approval.status, "pending");
 });
 
-
-test("ApprovalService allows human resolution for app-server sessions", () => {
+test("ApprovalService allows local human resolution when no transport callback is required", async () => {
   const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ai-host-proto-"));
   const registry = new SessionRegistry({ projectRoot });
   const service = new ApprovalService({
@@ -82,7 +81,7 @@ test("ApprovalService allows human resolution for app-server sessions", () => {
     summary: "needs manual decision"
   });
 
-  const resolved = service.resolveApproval(created.approval.requestId, {
+  const resolved = await service.resolveApproval(created.approval.requestId, {
     decision: "approve",
     decidedBy: "human",
     reason: "manual override"
@@ -91,4 +90,37 @@ test("ApprovalService allows human resolution for app-server sessions", () => {
   assert.equal(resolved.ok, true);
   assert.equal(resolved.approval.status, "resolved");
   assert.equal(resolved.approval.decision.decision, "approve");
+});
+
+test("ApprovalService returns fallback when transport callback cannot inject the decision", async () => {
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ai-host-proto-"));
+  const registry = new SessionRegistry({ projectRoot });
+  const service = new ApprovalService({
+    registry,
+    policyEngine: new PolicyEngine(),
+    decisionHandler: async () => ({ handled: true, ok: false, error: "needs-human-fallback" })
+  });
+
+  const session = registry.createSession({
+    source: "ide",
+    transport: "app-server",
+    workspaceRoot: projectRoot
+  });
+  registry.updateSession(session.hostSessionId, { status: "running" });
+
+  const created = service.createApproval(session.hostSessionId, {
+    riskLevel: "high",
+    actionType: "shell",
+    summary: "needs upstream reply"
+  });
+
+  const resolved = await service.resolveApproval(created.approval.requestId, {
+    decision: "approve",
+    decidedBy: "human",
+    reason: "manual override"
+  });
+
+  assert.equal(resolved.ok, false);
+  assert.equal(resolved.error, "needs-human-fallback");
+  assert.equal(registry.getApproval(created.approval.requestId).status, "pending");
 });

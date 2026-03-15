@@ -2,6 +2,7 @@ class ApprovalService {
   constructor(options) {
     this.registry = options.registry;
     this.policyEngine = options.policyEngine;
+    this.decisionHandler = options.decisionHandler || null;
   }
 
   listApprovals(filter = {}) {
@@ -47,7 +48,7 @@ class ApprovalService {
     };
   }
 
-  resolveApproval(requestId, input) {
+  async resolveApproval(requestId, input) {
     const approval = this.registry.getApproval(requestId);
     if (!approval) {
       const error = new Error(`Unknown approval: ${requestId}`);
@@ -69,6 +70,22 @@ class ApprovalService {
         error: "needs-human-fallback",
         hostSessionId: session.hostSessionId
       };
+    }
+
+    if (this.decisionHandler) {
+      const decisionResult = await this.decisionHandler(approval, {
+        decision: input.decision || "escalate",
+        decidedBy,
+        reason: input.reason || null
+      });
+
+      if (decisionResult && decisionResult.handled && decisionResult.ok === false) {
+        return {
+          ok: false,
+          error: decisionResult.error || "needs-human-fallback",
+          hostSessionId: session.hostSessionId
+        };
+      }
     }
 
     this.registry.resolveApproval(requestId, {

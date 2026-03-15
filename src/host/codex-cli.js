@@ -2,6 +2,7 @@ const { spawn } = require("node:child_process");
 const path = require("node:path");
 const readline = require("node:readline");
 
+const { CodexAppServerClient } = require("./app-server-client");
 const { mapCodexJsonlLine } = require("./codex-event-parser");
 const { safeJsonParse } = require("./utils");
 
@@ -11,6 +12,10 @@ class CodexCliManager {
     this.projectRoot = options.projectRoot;
     this.activeRuns = new Map();
     this.wrapperPath = path.join(this.projectRoot, "bin", "codex-wrapper.cmd");
+    this.appServerClient = new CodexAppServerClient({
+      registry: this.registry,
+      projectRoot: this.projectRoot
+    });
   }
 
   async launchCliSession(input) {
@@ -23,6 +28,10 @@ class CodexCliManager {
 
     if (mode === "tty") {
       return this.launchTtySession(input);
+    }
+
+    if (mode === "app-server") {
+      return this.appServerClient.launchCliSession(input);
     }
 
     return this.launchExecJsonSession(input);
@@ -47,6 +56,10 @@ class CodexCliManager {
       return this.refreshDetachedProcessSession(session);
     }
 
+    if (session.transport === "app-server" && session.runtime.mode === "app-server") {
+      return this.appServerClient.refreshSession(hostSessionId);
+    }
+
     return session;
   }
 
@@ -60,6 +73,10 @@ class CodexCliManager {
       const error = new Error(`Unknown session: ${hostSessionId}`);
       error.statusCode = 404;
       throw error;
+    }
+
+    if (session.transport === "app-server" && session.runtime.mode === "app-server") {
+      return this.appServerClient.sendMessage(hostSessionId, prompt);
     }
 
     if (session.transport !== "exec-json") {
@@ -96,6 +113,10 @@ class CodexCliManager {
       search: Boolean(session.runtime.search),
       resumeSessionId: session.upstreamSessionId
     });
+  }
+
+  async handleApprovalDecision(approval, input) {
+    return this.appServerClient.handleApprovalDecision(approval, input);
   }
 
   async launchIdeSession(input) {

@@ -9,8 +9,12 @@ const { SessionRegistry } = require("./host/session-registry");
 const projectRoot = path.resolve(__dirname, "..");
 const registry = new SessionRegistry({ projectRoot });
 const policyEngine = new PolicyEngine();
-const approvalService = new ApprovalService({ registry, policyEngine });
 const manager = new CodexCliManager({ registry, projectRoot });
+const approvalService = new ApprovalService({
+  registry,
+  policyEngine,
+  decisionHandler: (approval, decision) => manager.handleApprovalDecision(approval, decision)
+});
 
 const server = http.createServer(async (req, res) => {
   try {
@@ -134,7 +138,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "POST" && url.pathname.startsWith("/approvals/") && url.pathname.endsWith("/decision")) {
       const requestId = decodeURIComponent(url.pathname.split("/")[2]);
       const body = await readJson(req);
-      const result = approvalService.resolveApproval(requestId, body || {});
+      const result = await approvalService.resolveApproval(requestId, body || {});
       const statusCode = result.ok ? 200 : 409;
       return sendJson(res, statusCode, result);
     }

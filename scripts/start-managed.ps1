@@ -1,4 +1,4 @@
-﻿param(
+param(
   [Parameter(Mandatory = $true, Position = 0)]
   [ValidateSet('cli', 'ide')]
   [string]$Target,
@@ -7,7 +7,7 @@
   [string]$Cwd = (Get-Location).Path,
   [string]$Prompt = '',
 
-  [ValidateSet('tty', 'exec-json', 'sdk')]
+  [ValidateSet('tty', 'exec-json', 'sdk', 'app-server')]
   [string]$CliMode = 'tty',
 
   [ValidateSet('read-only', 'workspace-write', 'danger-full-access')]
@@ -64,8 +64,11 @@ function Start-ManagedCli {
     $body.prompt = $SessionPrompt
   }
 
-  if ($Mode -eq 'exec-json') {
+  if ($Mode -ne 'tty') {
     $body.sandbox = $SandboxMode
+  }
+
+  if ($Mode -eq 'exec-json') {
     $body.skipGitRepoCheck = $SkipRepoCheck
   }
 
@@ -78,13 +81,13 @@ function Start-ManagedCli {
     status = $result.session.status
     workspaceRoot = $result.session.workspaceRoot
     terminalLaunchInfo = $result.terminalLaunchInfo
-    next = if ($Mode -eq 'exec-json') {
+    next = if ($Mode -eq 'tty') {
+      @('A managed tty Codex window should open separately.')
+    } else {
       @(
         "Invoke-RestMethod $BaseUrl/sessions/$($result.session.hostSessionId)",
         "Invoke-RestMethod $BaseUrl/sessions/$($result.session.hostSessionId)/events"
       )
-    } else {
-      @('A managed tty Codex window should open separately.')
     }
   }
 }
