@@ -7,6 +7,33 @@ const path = require("node:path");
 const { CodexCliManager } = require("../src/host/codex-cli");
 const { SessionRegistry } = require("../src/host/session-registry");
 
+test("CodexCliManager routes sdk mode through the sdk/thread compatibility transport", async () => {
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ai-host-proto-"));
+  const registry = new SessionRegistry({ projectRoot });
+  const manager = new CodexCliManager({ registry, projectRoot });
+  let calledWith = null;
+
+  manager.appServerClient.launchSdkSession = async (input) => {
+    calledWith = input;
+    return {
+      record: {
+        hostSessionId: "host-cli-sdk-test"
+      },
+      terminalLaunchInfo: null
+    };
+  };
+
+  const result = await manager.launchCliSession({
+    mode: "sdk",
+    cwd: projectRoot,
+    prompt: "Reply with exactly OK."
+  });
+
+  assert.equal(calledWith.mode, "sdk");
+  assert.equal(calledWith.cwd, projectRoot);
+  assert.equal(result.record.hostSessionId, "host-cli-sdk-test");
+});
+
 test("CodexCliManager prepares wrapper-managed IDE sessions with experimental capabilities", async () => {
   const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ai-host-proto-"));
   const registry = new SessionRegistry({ projectRoot });

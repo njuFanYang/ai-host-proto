@@ -21,9 +21,7 @@ class CodexCliManager {
   async launchCliSession(input) {
     const mode = input.mode || "exec-json";
     if (mode === "sdk") {
-      const error = new Error("sdk mode is planned but not implemented in this prototype");
-      error.statusCode = 501;
-      throw error;
+      return this.appServerClient.launchSdkSession(input);
     }
 
     if (mode === "tty") {
@@ -56,7 +54,8 @@ class CodexCliManager {
       return this.refreshDetachedProcessSession(session);
     }
 
-    if (session.transport === "app-server" && session.runtime.mode === "app-server") {
+    if ((session.transport === "app-server" && session.runtime.mode === "app-server") ||
+      (session.transport === "sdk/thread" && session.runtime.mode === "sdk")) {
       return this.appServerClient.refreshSession(hostSessionId);
     }
 
@@ -79,7 +78,8 @@ class CodexCliManager {
       throw error;
     }
 
-    if (session.transport === "app-server" && session.runtime.mode === "app-server") {
+    if ((session.transport === "app-server" && session.runtime.mode === "app-server") ||
+      (session.transport === "sdk/thread" && session.runtime.mode === "sdk")) {
       return this.appServerClient.sendMessage(hostSessionId, prompt);
     }
 
@@ -627,5 +627,3 @@ function escapeDoubleQuotes(value) {
 module.exports = {
   CodexCliManager
 };
-
-

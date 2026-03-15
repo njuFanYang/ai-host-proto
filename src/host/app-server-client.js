@@ -17,20 +17,41 @@ class CodexAppServerClient {
   }
 
   async launchCliSession(input) {
-    const workspaceRoot = input.cwd || this.projectRoot;
-    const record = this.registry.createSession({
+    return this.launchRpcSession(input, {
       source: "cli",
       transport: "app-server",
+      runtimeMode: "app-server",
+      metadata: {
+        experimental: true
+      }
+    });
+  }
+
+  async launchSdkSession(input) {
+    return this.launchRpcSession(input, {
+      source: "cli",
+      transport: "sdk/thread",
+      runtimeMode: "sdk",
+      metadata: {
+        experimental: true,
+        compatibilityShim: "app-server"
+      }
+    });
+  }
+
+  async launchRpcSession(input, options) {
+    const workspaceRoot = input.cwd || this.projectRoot;
+    const record = this.registry.createSession({
+      source: options.source || "cli",
+      transport: options.transport,
       workspaceRoot,
       runtime: {
-        mode: "app-server",
+        mode: options.runtimeMode,
         sandbox: input.sandbox || "read-only",
         model: input.model || null,
         profile: input.profile || null
       },
-      metadata: {
-        experimental: true
-      }
+      metadata: options.metadata || {}
     });
 
     await this.connect(record.hostSessionId, {
@@ -60,7 +81,7 @@ class CodexAppServerClient {
 
   refreshSession(hostSessionId) {
     const session = this.registry.getSession(hostSessionId);
-    if (!session || session.transport !== "app-server" || session.runtime.mode !== "app-server") {
+    if (!isManagedRpcSession(session)) {
       return session;
     }
 
@@ -94,7 +115,7 @@ class CodexAppServerClient {
       throw error;
     }
 
-    if (session.transport !== "app-server" || session.runtime.mode !== "app-server") {
+    if (!isManagedRpcSession(session)) {
       return false;
     }
 
@@ -119,7 +140,7 @@ class CodexAppServerClient {
 
   async handleApprovalDecision(approval, input) {
     const session = this.registry.getSession(approval.hostSessionId);
-    if (!session || session.transport !== "app-server" || session.runtime.mode !== "app-server") {
+    if (!isManagedRpcSession(session)) {
       return { handled: false };
     }
 
@@ -685,6 +706,13 @@ class CodexAppServerClient {
     }
     connection.pending.clear();
   }
+}
+
+function isManagedRpcSession(session) {
+  return Boolean(session) && (
+    (session.transport === "app-server" && session.runtime && session.runtime.mode === "app-server") ||
+    (session.transport === "sdk/thread" && session.runtime && session.runtime.mode === "sdk")
+  );
 }
 
 function buildAppServerEnv(codexHome) {
