@@ -60,6 +60,10 @@ class CodexCliManager {
       return this.appServerClient.refreshSession(hostSessionId);
     }
 
+    if (session.transport === "app-server" && session.runtime.mode === "wrapper-managed") {
+      return this.refreshWrapperManagedSession(session);
+    }
+
     return session;
   }
 
@@ -139,7 +143,8 @@ class CodexCliManager {
       },
       metadata: {
         experimental: true
-      }
+      },
+      transportCapabilities: wrapperManagedCapabilities()
     });
 
     this.registry.appendEvent(record.hostSessionId, {
@@ -185,7 +190,8 @@ class CodexCliManager {
         },
         metadata: {
           argv: input.argv || []
-        }
+        },
+        transportCapabilities: wrapperManagedCapabilities()
       });
     }
 
@@ -207,6 +213,43 @@ class CodexCliManager {
     });
 
     return record;
+  }
+
+  async updateWrapperRuntime(hostSessionId, input) {
+    const session = this.registry.getSession(hostSessionId);
+    if (!session) {
+      const error = new Error(`Unknown wrapper session: ${hostSessionId}`);
+      error.statusCode = 404;
+      throw error;
+    }
+
+    const runtime = {
+      ...(session.runtime || {}),
+      processId: input.processId || null,
+      realCodex: input.realCodex || null,
+      launchedAt: input.launchedAt || new Date().toISOString(),
+      wrapperReported: true
+    };
+
+    this.registry.updateSession(hostSessionId, {
+      status: "running",
+      runtime,
+      metadata: {
+        ...(session.metadata || {}),
+        argv: Array.isArray(input.argv) ? input.argv : ((session.metadata && session.metadata.argv) || [])
+      }
+    });
+    this.registry.appendEvent(hostSessionId, {
+      kind: "wrapper_runtime_reported",
+      controllability: "observed",
+      payload: {
+        processId: runtime.processId,
+        realCodex: runtime.realCodex,
+        argv: Array.isArray(input.argv) ? input.argv : []
+      }
+    });
+
+    return this.registry.getSession(hostSessionId);
   }
 
   async markWrapperCompleted(hostSessionId, input) {
@@ -457,6 +500,35 @@ class CodexCliManager {
     return this.registry.getSession(session.hostSessionId);
   }
 
+  refreshWrapperManagedSession(session) {
+    const processId = session.runtime && session.runtime.processId;
+    if (!processId) {
+      return session;
+    }
+
+    const isAlive = processExists(processId);
+    if (isAlive) {
+      if (session.status !== "running") {
+        this.registry.updateSession(session.hostSessionId, { status: "running" });
+      }
+      return this.registry.getSession(session.hostSessionId);
+    }
+
+    if (session.status === "running" || session.status === "starting" || session.status === "waiting_approval") {
+      this.registry.updateSession(session.hostSessionId, { status: "ended" });
+      this.registry.appendEvent(session.hostSessionId, {
+        kind: "session_ended",
+        controllability: "observed",
+        payload: {
+          reason: "wrapper_process_not_running",
+          processId
+        }
+      });
+    }
+
+    return this.registry.getSession(session.hostSessionId);
+  }
+
   refreshTtySession(session) {
     const processId = session.runtime && session.runtime.processId;
     if (!processId) {
@@ -485,6 +557,15 @@ class CodexCliManager {
 
     return this.registry.getSession(session.hostSessionId);
   }
+}
+
+function wrapperManagedCapabilities() {
+  return {
+    sessionRegistration: "supported",
+    outputCollection: "limited",
+    messageInjection: "conditional",
+    autoHitl: "poc"
+  };
 }
 
 function buildExecArgs(input) {
@@ -546,3 +627,5 @@ function escapeDoubleQuotes(value) {
 module.exports = {
   CodexCliManager
 };
+
+

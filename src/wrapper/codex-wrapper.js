@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 const { spawn } = require("node:child_process");
-const path = require("node:path");
 
 async function main() {
   const hostUrl = process.env.AI_HOST_URL || "http://127.0.0.1:7788";
@@ -37,6 +36,23 @@ async function main() {
     }
   });
 
+  if (hostSessionId) {
+    try {
+      await fetch(`${hostUrl}/internal/wrappers/${encodeURIComponent(hostSessionId)}/runtime`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          processId: child.pid,
+          realCodex,
+          argv,
+          launchedAt: new Date().toISOString()
+        })
+      });
+    } catch (_error) {
+      // Best effort only.
+    }
+  }
+
   child.on("exit", async (code, signal) => {
     if (hostSessionId) {
       try {
@@ -45,7 +61,8 @@ async function main() {
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
             exitCode: code || 0,
-            signal: signal || null
+            signal: signal || null,
+            processId: child.pid
           })
         });
       } catch (_error) {
@@ -56,7 +73,23 @@ async function main() {
     process.exit(code || 0);
   });
 
-  child.on("error", (_error) => {
+  child.on("error", async (_error) => {
+    if (hostSessionId) {
+      try {
+        await fetch(`${hostUrl}/internal/wrappers/${encodeURIComponent(hostSessionId)}/complete`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            exitCode: 1,
+            signal: null,
+            processId: child.pid || null
+          })
+        });
+      } catch (_ignored) {
+        // Best effort only.
+      }
+    }
+
     process.exit(1);
   });
 }
