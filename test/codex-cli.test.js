@@ -202,3 +202,109 @@ test("CodexCliManager ends wrapper-managed sessions when the wrapped process dis
   assert.equal(lastEvent.kind, "session_ended");
   assert.equal(lastEvent.payload.reason, "wrapper_process_not_running");
 });
+
+test("CodexCliManager queues wrapper-managed app-server message injection", async () => {
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ai-host-proto-"));
+  const registry = new SessionRegistry({ projectRoot });
+  const manager = new CodexCliManager({ registry, projectRoot });
+
+  const prepared = await manager.launchIdeSession({ cwd: projectRoot });
+  const hostSessionId = prepared.record.hostSessionId;
+
+  await manager.updateWrapperRuntime(hostSessionId, {
+    processId: process.pid,
+    realCodex: "codex",
+    argv: ["app-server"],
+    proxyMode: "app-server"
+  });
+  await manager.recordWrapperEvent(hostSessionId, {
+    direction: "stdout",
+    line: JSON.stringify({ method: "thread/started", params: { thread: { id: "thread-wrapper-1" } } })
+  });
+
+  const result = await manager.sendMessage(hostSessionId, "Reply with exactly THIRD.");
+  const commands = manager.claimWrapperCommands(hostSessionId);
+  const events = registry.listEvents(hostSessionId);
+
+  assert.equal(result.queued, true);
+  assert.equal(commands.length, 1);
+  assert.equal(commands[0].kind, "start_turn");
+  assert.equal(commands[0].payload.threadId, "thread-wrapper-1");
+  assert.equal(commands[0].payload.prompt, "Reply with exactly THIRD.");
+  assert.equal(events.some((event) => event.kind === "wrapper_command_queued"), true);
+  assert.equal(events.some((event) => event.kind === "user_input" && event.payload.text === "Reply with exactly THIRD."), true);
+});
+
+test("CodexCliManager queues wrapper-managed approval callback for human decisions", async () => {
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ai-host-proto-"));
+  const registry = new SessionRegistry({ projectRoot });
+  const manager = new CodexCliManager({ registry, projectRoot });
+
+  const prepared = await manager.launchIdeSession({ cwd: projectRoot });
+  const hostSessionId = prepared.record.hostSessionId;
+
+  await manager.updateWrapperRuntime(hostSessionId, {
+    processId: process.pid,
+    realCodex: "codex",
+    argv: ["app-server"],
+    proxyMode: "app-server"
+  });
+  await manager.recordWrapperEvent(hostSessionId, {
+    direction: "stdout",
+    line: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 9,
+      method: "item/fileChange/requestApproval",
+      params: { reason: "write file" }
+    })
+  });
+
+  const approval = registry.listApprovals({ hostSessionId })[0];
+  const decision = await manager.handleApprovalDecision(approval, {
+    decision: "approve",
+    decidedBy: "human",
+    reason: "manual override"
+  });
+  const commands = manager.claimWrapperCommands(hostSessionId);
+  const events = registry.listEvents(hostSessionId);
+
+  assert.equal(decision.handled, true);
+  assert.equal(decision.ok, true);
+  assert.equal(commands.length, 1);
+  assert.equal(commands[0].kind, "approval_response");
+  assert.equal(commands[0].payload.rpcRequestId, 9);
+  assert.deepEqual(commands[0].payload.result, { decision: "accept" });
+  assert.equal(events.some((event) => event.kind === "approval_result_upstream"), true);
+});
+
+test("CodexCliManager records wrapper command completion", async () => {
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ai-host-proto-"));
+  const registry = new SessionRegistry({ projectRoot });
+  const manager = new CodexCliManager({ registry, projectRoot });
+
+  const prepared = await manager.launchIdeSession({ cwd: projectRoot });
+  const hostSessionId = prepared.record.hostSessionId;
+
+  await manager.updateWrapperRuntime(hostSessionId, {
+    processId: process.pid,
+    realCodex: "codex",
+    argv: ["app-server"],
+    proxyMode: "app-server"
+  });
+  await manager.recordWrapperEvent(hostSessionId, {
+    direction: "stdout",
+    line: JSON.stringify({ method: "thread/started", params: { thread: { id: "thread-wrapper-2" } } })
+  });
+
+  await manager.sendMessage(hostSessionId, "Reply with exactly FOURTH.");
+  const commands = manager.claimWrapperCommands(hostSessionId);
+  const completed = manager.completeWrapperCommand(hostSessionId, commands[0].commandId, {
+    ok: true,
+    response: { turn: { id: "turn-wrapper-1" } }
+  });
+  const lastEvent = registry.listEvents(hostSessionId).at(-1);
+
+  assert.equal(completed.status, "completed");
+  assert.equal(lastEvent.kind, "wrapper_command_completed");
+  assert.equal(lastEvent.payload.commandId, commands[0].commandId);
+});

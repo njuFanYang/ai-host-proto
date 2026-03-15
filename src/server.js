@@ -95,6 +95,27 @@ const server = http.createServer(async (req, res) => {
       });
     }
 
+    if (req.method === "GET" && url.pathname.startsWith("/internal/wrappers/") && url.pathname.endsWith("/commands")) {
+      const hostSessionId = decodeURIComponent(url.pathname.split("/")[3]);
+      const commands = manager.claimWrapperCommands(hostSessionId);
+      return sendJson(res, 200, {
+        hostSessionId,
+        commands
+      });
+    }
+
+    if (req.method === "POST" && url.pathname.startsWith("/internal/wrappers/") && url.pathname.includes("/commands/") && url.pathname.endsWith("/complete")) {
+      const parts = url.pathname.split("/");
+      const hostSessionId = decodeURIComponent(parts[3]);
+      const commandId = decodeURIComponent(parts[5]);
+      const body = await readJson(req);
+      const command = manager.completeWrapperCommand(hostSessionId, commandId, body || {});
+      return sendJson(res, 200, {
+        hostSessionId,
+        command
+      });
+    }
+
     if (req.method === "POST" && url.pathname.startsWith("/internal/wrappers/") && url.pathname.endsWith("/events")) {
       const hostSessionId = decodeURIComponent(url.pathname.split("/")[3]);
       const body = await readJson(req);
@@ -302,3 +323,4 @@ function readJson(req) {
     req.on("error", reject);
   });
 }
+

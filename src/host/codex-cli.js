@@ -7,17 +7,19 @@ const {
   inferApprovalActionType,
   inferApprovalRisk,
   isApprovalMethod,
+  mapApprovalDecisionToRpcResult,
   mapCompletedItemEvent,
   CodexAppServerClient
 } = require("./app-server-client");
 const { mapCodexJsonlLine } = require("./codex-event-parser");
-const { safeJsonParse } = require("./utils");
+const { createId, safeJsonParse } = require("./utils");
 
 class CodexCliManager {
   constructor(options) {
     this.registry = options.registry;
     this.projectRoot = options.projectRoot;
     this.activeRuns = new Map();
+    this.wrapperCommands = new Map();
     this.wrapperPath = path.join(this.projectRoot, "bin", "codex-wrapper.cmd");
     this.appServerClient = new CodexAppServerClient({
       registry: this.registry,
@@ -90,6 +92,10 @@ class CodexCliManager {
       return this.appServerClient.sendMessage(hostSessionId, prompt);
     }
 
+    if (session.transport === "app-server" && session.runtime.mode === "wrapper-managed") {
+      return this.sendWrapperManagedMessage(session, prompt);
+    }
+
     if (session.transport !== "exec-json") {
       const error = new Error(`Session ${hostSessionId} does not support controllable message injection`);
       error.statusCode = 409;
@@ -127,7 +133,51 @@ class CodexCliManager {
   }
 
   async handleApprovalDecision(approval, input) {
+    const session = this.registry.getSession(approval.hostSessionId);
+    if (isWrapperManagedProxySession(session) && approval.rawRequest && approval.rawRequest.source === "wrapper-proxy") {
+      return this.handleWrapperApprovalDecision(session, approval, input);
+    }
+
     return this.appServerClient.handleApprovalDecision(approval, input);
+  }
+
+  claimWrapperCommands(hostSessionId) {
+    const queue = this.ensureWrapperCommandQueue(hostSessionId);
+    const commands = queue.pending.splice(0);
+    for (const command of commands) {
+      command.status = "dispatched";
+      command.dispatchedAt = new Date().toISOString();
+      queue.inFlight.set(command.commandId, command);
+    }
+    return commands;
+  }
+
+  completeWrapperCommand(hostSessionId, commandId, input) {
+    const queue = this.ensureWrapperCommandQueue(hostSessionId);
+    const command = queue.inFlight.get(commandId) || null;
+    if (!command) {
+      const error = new Error(`Unknown wrapper command: ${commandId}`);
+      error.statusCode = 404;
+      throw error;
+    }
+
+    queue.inFlight.delete(commandId);
+    command.status = input && input.ok === false ? "failed" : "completed";
+    command.completedAt = new Date().toISOString();
+    command.result = input || {};
+
+    this.registry.appendEvent(hostSessionId, {
+      kind: command.status === "failed" ? "wrapper_command_failed" : "wrapper_command_completed",
+      controllability: "controllable",
+      payload: {
+        commandId,
+        kind: command.kind,
+        ok: command.status !== "failed",
+        result: input || {}
+      }
+    });
+
+    return command;
   }
 
   async launchIdeSession(input) {
@@ -259,6 +309,125 @@ class CodexCliManager {
     });
 
     return this.registry.getSession(hostSessionId);
+  }
+
+  sendWrapperManagedMessage(session, prompt) {
+    if (!isWrapperManagedProxySession(session)) {
+      const error = new Error(`Session ${session.hostSessionId} does not support wrapper-managed message injection`);
+      error.statusCode = 409;
+      throw error;
+    }
+
+    if (!session.upstreamSessionId) {
+      const error = new Error(`Session ${session.hostSessionId} is not bound to an upstream session yet`);
+      error.statusCode = 409;
+      throw error;
+    }
+
+    this.registry.appendEvent(session.hostSessionId, {
+      kind: "user_input",
+      controllability: "controllable",
+      payload: {
+        text: prompt,
+        resumed: true,
+        transport: "wrapper-managed"
+      }
+    });
+
+    const command = this.enqueueWrapperCommand(session.hostSessionId, {
+      kind: "start_turn",
+      payload: {
+        threadId: session.upstreamSessionId,
+        prompt
+      }
+    });
+
+    return {
+      queued: true,
+      commandId: command.commandId
+    };
+  }
+
+  handleWrapperApprovalDecision(session, approval, input) {
+    const rawRequest = approval.rawRequest || {};
+    const mapped = mapApprovalDecisionToRpcResult(rawRequest.method, rawRequest.params || {}, input);
+    if (!mapped.ok) {
+      return {
+        handled: true,
+        ok: false,
+        error: mapped.error
+      };
+    }
+
+    const command = this.enqueueWrapperCommand(session.hostSessionId, {
+      kind: "approval_response",
+      payload: {
+        rpcRequestId: rawRequest.rpcRequestId,
+        method: rawRequest.method,
+        result: mapped.result
+      }
+    });
+
+    this.registry.appendEvent(session.hostSessionId, {
+      kind: "approval_result_upstream",
+      controllability: "controllable",
+      payload: {
+        requestId: approval.requestId,
+        rpcRequestId: rawRequest.rpcRequestId,
+        method: rawRequest.method,
+        decision: input.decision || "escalate",
+        commandId: command.commandId,
+        transport: "wrapper-managed"
+      }
+    });
+
+    return {
+      handled: true,
+      ok: true,
+      commandId: command.commandId
+    };
+  }
+
+  enqueueWrapperCommand(hostSessionId, input) {
+    const session = this.registry.getSession(hostSessionId);
+    if (!session) {
+      const error = new Error(`Unknown wrapper session: ${hostSessionId}`);
+      error.statusCode = 404;
+      throw error;
+    }
+
+    const queue = this.ensureWrapperCommandQueue(hostSessionId);
+    const command = {
+      commandId: createId("wrappercmd"),
+      kind: input.kind,
+      payload: input.payload || {},
+      status: "queued",
+      createdAt: new Date().toISOString()
+    };
+
+    queue.pending.push(command);
+    this.registry.appendEvent(hostSessionId, {
+      kind: "wrapper_command_queued",
+      controllability: "controllable",
+      payload: {
+        commandId: command.commandId,
+        kind: command.kind
+      }
+    });
+
+    return command;
+  }
+
+  ensureWrapperCommandQueue(hostSessionId) {
+    let queue = this.wrapperCommands.get(hostSessionId);
+    if (!queue) {
+      queue = {
+        pending: [],
+        inFlight: new Map()
+      };
+      this.wrapperCommands.set(hostSessionId, queue);
+    }
+    return queue;
   }
 
   async recordWrapperEvent(hostSessionId, input) {
@@ -890,6 +1059,14 @@ function inferObservedApprovalDecision(message) {
   return "approve";
 }
 
+function isWrapperManagedProxySession(session) {
+  return Boolean(session) &&
+    session.transport === "app-server" &&
+    session.runtime &&
+    session.runtime.mode === "wrapper-managed" &&
+    session.runtime.proxyMode === "app-server";
+}
+
 function wrapperManagedCapabilities() {
   return {
     sessionRegistration: "supported",
@@ -958,5 +1135,6 @@ function escapeDoubleQuotes(value) {
 module.exports = {
   CodexCliManager
 };
+
 
 
