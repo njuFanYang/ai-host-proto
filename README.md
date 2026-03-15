@@ -150,6 +150,12 @@ codex-watch -Latest -Once
 codex-watch -SessionId <hostSessionId>
 ```
 
+实时订阅某个 session：
+
+```powershell
+codex-watch -SessionId <hostSessionId> -Stream
+```
+
 `codex-watch` 当前会额外显示 `mode`、`upstreamSessionId`、transport capabilities、`processId` 和 wrapper runtime 信息，便于区分结构化受控路径与实验性 IDE 路径。
 
 查看审批队列：
@@ -157,6 +163,13 @@ codex-watch -SessionId <hostSessionId>
 ```powershell
 codex-approvals -Once
 codex-approvals -SessionId <hostSessionId> -Once
+```
+
+实时订阅审批流：
+
+```powershell
+codex-approvals -Stream
+codex-approvals -SessionId <hostSessionId> -Stream
 ```
 
 提交审批决定：

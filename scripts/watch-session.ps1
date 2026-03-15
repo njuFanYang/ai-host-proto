@@ -4,7 +4,8 @@ param(
   [int]$IntervalSeconds = 2,
   [int]$Tail = 20,
   [switch]$Latest,
-  [switch]$Once
+  [switch]$Once,
+  [switch]$Stream
 )
 
 $ErrorActionPreference = 'Stop'
@@ -66,8 +67,109 @@ function Format-EventLine {
   "[$($Event.timestamp)] [$($Event.kind)] [$($Event.controllability)] $summary"
 }
 
+function Write-SessionSummary {
+  param($Session)
+
+  Write-Output "Session:      $($Session.hostSessionId)"
+  Write-Output "Source:       $($Session.source)"
+  Write-Output "Transport:    $($Session.transport)"
+  Write-Output "Mode:         $($Session.runtime.mode)"
+  Write-Output "Status:       $($Session.status)"
+  Write-Output "Registration: $($Session.registrationState)"
+  Write-Output "Upstream:     $($Session.upstreamSessionId)"
+  Write-Output "Workspace:    $($Session.workspaceRoot)"
+  Write-Output "Capabilities: $(Format-Capabilities -Capabilities $Session.transportCapabilities)"
+  if ($Session.runtime.processId) {
+    Write-Output "ProcessId:    $($Session.runtime.processId)"
+  }
+  if ($Session.runtime.realCodex) {
+    Write-Output "Real Codex:   $($Session.runtime.realCodex)"
+  }
+  if ($Session.runtime.launchedAt) {
+    Write-Output "Launched At:  $($Session.runtime.launchedAt)"
+  }
+}
+
+function Invoke-SessionStream {
+  param(
+    [string]$BaseUrl,
+    [string]$ResolvedSessionId,
+    [int]$RecentTail,
+    [switch]$ExitAfterSnapshot
+  )
+
+  $uri = "$BaseUrl/sessions/$ResolvedSessionId/events/stream"
+  Add-Type -AssemblyName System.Net.Http
+  $client = New-Object System.Net.Http.HttpClient
+  try {
+    $request = New-Object System.Net.Http.HttpRequestMessage ([System.Net.Http.HttpMethod]::Get, $uri)
+    $response = $client.SendAsync($request, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
+    $response.EnsureSuccessStatusCode() | Out-Null
+    $stream = $response.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
+    $reader = New-Object System.IO.StreamReader($stream)
+    $eventName = $null
+    $dataLines = New-Object 'System.Collections.Generic.List[string]'
+
+    while (($line = $reader.ReadLine()) -ne $null) {
+      if ($line.StartsWith(':')) {
+        continue
+      }
+
+      if ($line -eq '') {
+        if ($eventName -and $dataLines.Count -gt 0) {
+          $payload = ($dataLines -join "`n") | ConvertFrom-Json
+          switch ($eventName) {
+            'snapshot' {
+              Write-SessionSummary -Session $payload.session
+              Write-Output ''
+              Write-Output 'Recent events:'
+              @($payload.events | Select-Object -Last $RecentTail) | ForEach-Object {
+                Write-Output (Format-EventLine -Event $_)
+              }
+              if ($ExitAfterSnapshot) {
+                return
+              }
+            }
+            'session' {
+              Write-Output ("[session] status={0} registration={1} upstream={2}" -f $payload.session.status, $payload.session.registrationState, $payload.session.upstreamSessionId)
+            }
+            'event' {
+              Write-Output (Format-EventLine -Event $payload.event)
+            }
+            'approval' {
+              Write-Output ("[approval] [{0}] {1} {2} {3}" -f $payload.approval.requestId, $payload.action, $payload.approval.riskLevel, $payload.approval.summary)
+            }
+          }
+        }
+
+        $eventName = $null
+        $dataLines.Clear()
+        continue
+      }
+
+      if ($line.StartsWith('event: ')) {
+        $eventName = $line.Substring(7)
+        continue
+      }
+
+      if ($line.StartsWith('data: ')) {
+        [void]$dataLines.Add($line.Substring(6))
+      }
+    }
+  }
+  finally {
+    if ($client) {
+      $client.Dispose()
+    }
+  }
+}
+
 $resolvedSessionId = Resolve-SessionId -InputId $SessionId -UseLatest:$Latest
-$seen = New-Object 'System.Collections.Generic.HashSet[string]'
+
+if ($Stream) {
+  Invoke-SessionStream -BaseUrl $HostUrl -ResolvedSessionId $resolvedSessionId -RecentTail $Tail -ExitAfterSnapshot:$Once
+  exit 0
+}
 
 while ($true) {
   $session = (Invoke-RestMethod -Method Get -Uri "$HostUrl/sessions/$resolvedSessionId").session
@@ -76,30 +178,12 @@ while ($true) {
   if (-not $Once) {
     Clear-Host
   }
-  Write-Output "Session:      $($session.hostSessionId)"
-  Write-Output "Source:       $($session.source)"
-  Write-Output "Transport:    $($session.transport)"
-  Write-Output "Mode:         $($session.runtime.mode)"
-  Write-Output "Status:       $($session.status)"
-  Write-Output "Registration: $($session.registrationState)"
-  Write-Output "Upstream:     $($session.upstreamSessionId)"
-  Write-Output "Workspace:    $($session.workspaceRoot)"
-  Write-Output "Capabilities: $(Format-Capabilities -Capabilities $session.transportCapabilities)"
-  if ($session.runtime.processId) {
-    Write-Output "ProcessId:    $($session.runtime.processId)"
-  }
-  if ($session.runtime.realCodex) {
-    Write-Output "Real Codex:   $($session.runtime.realCodex)"
-  }
-  if ($session.runtime.launchedAt) {
-    Write-Output "Launched At:  $($session.runtime.launchedAt)"
-  }
-  Write-Output ""
-  Write-Output "Recent events:"
+  Write-SessionSummary -Session $session
+  Write-Output ''
+  Write-Output 'Recent events:'
 
   $recent = @($events | Select-Object -Last $Tail)
   foreach ($event in $recent) {
-    [void]$seen.Add($event.eventId)
     Write-Output (Format-EventLine -Event $event)
   }
 
