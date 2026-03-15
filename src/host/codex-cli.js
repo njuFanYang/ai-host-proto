@@ -28,6 +28,30 @@ class CodexCliManager {
     return this.launchExecJsonSession(input);
   }
 
+  refreshSession(hostSessionId) {
+    const session = this.registry.getSession(hostSessionId);
+    if (!session) {
+      return null;
+    }
+
+    if (session.transport === "tty") {
+      return this.refreshTtySession(session);
+    }
+
+    if (session.transport === "exec-json") {
+      if (this.activeRuns.has(hostSessionId)) {
+        this.registry.updateSession(hostSessionId, { status: "running" });
+      }
+      return this.registry.getSession(hostSessionId);
+    }
+
+    return session;
+  }
+
+  refreshAllSessions() {
+    return this.registry.listSessions().map((session) => this.refreshSession(session.hostSessionId));
+  }
+
   async sendMessage(hostSessionId, prompt) {
     const session = this.registry.getSession(hostSessionId);
     if (!session) {
@@ -208,7 +232,13 @@ class CodexCliManager {
     child.unref();
 
     this.registry.updateSession(record.hostSessionId, {
-      status: "running"
+      status: "running",
+      runtime: {
+        ...(record.runtime || {}),
+        processId: child.pid,
+        launchedAt: new Date().toISOString(),
+        command
+      }
     });
     this.registry.appendEvent(record.hostSessionId, {
       kind: "session_started",
@@ -369,6 +399,35 @@ class CodexCliManager {
       });
     });
   }
+
+  refreshTtySession(session) {
+    const processId = session.runtime && session.runtime.processId;
+    if (!processId) {
+      return session;
+    }
+
+    const isAlive = processExists(processId);
+    if (isAlive) {
+      if (session.status !== "running") {
+        this.registry.updateSession(session.hostSessionId, { status: "running" });
+      }
+      return this.registry.getSession(session.hostSessionId);
+    }
+
+    if (session.status === "running" || session.status === "starting") {
+      this.registry.updateSession(session.hostSessionId, { status: "ended" });
+      this.registry.appendEvent(session.hostSessionId, {
+        kind: "session_ended",
+        controllability: "observed",
+        payload: {
+          reason: "tty_process_not_running",
+          processId
+        }
+      });
+    }
+
+    return this.registry.getSession(session.hostSessionId);
+  }
 }
 
 function buildExecArgs(input) {
@@ -412,6 +471,15 @@ function buildExecArgs(input) {
 function buildTtyStartCommand(cwd, prompt) {
   const codexPart = prompt ? `codex "${escapeDoubleQuotes(prompt)}"` : "codex";
   return `start "" cmd.exe /k "cd /d ""${cwd}"" && ${codexPart}"`;
+}
+
+function processExists(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (_error) {
+    return false;
+  }
 }
 
 function escapeDoubleQuotes(value) {

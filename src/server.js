@@ -25,6 +25,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "GET" && url.pathname === "/sessions") {
+      manager.refreshAllSessions();
       return sendJson(res, 200, {
         sessions: registry.listSessions()
       });
@@ -78,13 +79,14 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && url.pathname.startsWith("/sessions/")) {
       const hostSessionId = decodeURIComponent(url.pathname.split("/")[2]);
       if (url.pathname.endsWith("/events")) {
+        manager.refreshSession(hostSessionId);
         return sendJson(res, 200, {
           hostSessionId,
           events: registry.listEvents(hostSessionId)
         });
       }
 
-      const session = registry.getSession(hostSessionId);
+      const session = manager.refreshSession(hostSessionId) || registry.getSession(hostSessionId);
       if (!session) {
         return sendJson(res, 404, { error: "session_not_found" });
       }

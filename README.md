@@ -85,6 +85,81 @@ http://127.0.0.1:7788
 Invoke-RestMethod http://127.0.0.1:7788/health
 ```
 
+## 命令包装器
+
+如果你想在 host 启动后，直接在 PowerShell 或 cmd 里输入类似 `codex-cli` / `codex-ide` 的命令，可以用项目内置的包装器：
+
+- `bin\codex-cli.cmd`
+- `bin\codex-ide.cmd`
+- `bin\codex-cli.ps1`
+- `bin\codex-ide.ps1`
+
+示例：
+
+```powershell
+bin\codex-cli.cmd -CliMode tty -Cwd E:\Develop\ai-host-proto -Prompt "help me inspect this repo"
+bin\codex-cli.cmd -CliMode exec-json -Cwd E:\Develop\ai-host-proto -Prompt "Reply with exactly OK." -SkipGitRepoCheck
+bin\codex-ide.cmd -Cwd E:\Develop\ai-host-proto
+```
+
+如果你希望以后直接输入 `codex-cli` 和 `codex-ide`，可以把 `bin` 注册到 PATH：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\register-shell-commands.ps1 -UserPath
+```
+
+只想对当前终端会话生效：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\register-shell-commands.ps1 -SessionOnly
+```
+
+监督 session 可以直接用：
+
+```powershell
+bin\codex-watch.cmd -Latest -Once
+bin\codex-watch.cmd -SessionId <hostSessionId>
+```
+
+如果你已经把 `bin` 注册进 PATH，也可以直接：
+
+```powershell
+codex-watch -Latest -Once
+codex-watch -SessionId <hostSessionId>
+```
+注册后，重开 PowerShell 或 cmd，就可以直接输入：
+
+```powershell
+codex-cli -CliMode tty -Cwd E:\Develop\ai-host-proto
+codex-ide -Cwd E:\Develop\ai-host-proto
+```
+## 快捷启动脚本
+
+在 host 已启动后，可以直接用统一脚本启动 managed CLI 或 IDE。
+
+CLI：
+
+```powershell
+scripts\start-managed.cmd cli -CliMode tty -Cwd E:\Develop\ai-host-proto -Prompt "help me inspect this repo"
+```
+
+结构化 CLI：
+
+```powershell
+scripts\start-managed.cmd cli -CliMode exec-json -Cwd E:\Develop\ai-host-proto -Prompt "Reply with exactly OK." -SkipGitRepoCheck
+```
+
+IDE：
+
+```powershell
+scripts\start-managed.cmd ide -Cwd E:\Develop\ai-host-proto
+```
+
+如果只想先注册 IDE session、不立刻打开 VS Code：
+
+```powershell
+scripts\start-managed.cmd ide -Cwd E:\Develop\ai-host-proto -NoLaunchCode
+```
 ## 核心 API
 
 ### 1. 创建 CLI session
