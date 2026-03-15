@@ -95,6 +95,16 @@ const server = http.createServer(async (req, res) => {
       });
     }
 
+    if (req.method === "POST" && url.pathname.startsWith("/internal/wrappers/") && url.pathname.endsWith("/events")) {
+      const hostSessionId = decodeURIComponent(url.pathname.split("/")[3]);
+      const body = await readJson(req);
+      const session = await manager.recordWrapperEvent(hostSessionId, body || {});
+      return sendJson(res, 202, {
+        session,
+        accepted: true
+      });
+    }
+
     if (req.method === "POST" && url.pathname.startsWith("/internal/wrappers/") && url.pathname.endsWith("/complete")) {
       const hostSessionId = decodeURIComponent(url.pathname.split("/")[3]);
       const body = await readJson(req);

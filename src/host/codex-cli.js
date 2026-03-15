@@ -2,7 +2,14 @@ const { spawn } = require("node:child_process");
 const path = require("node:path");
 const readline = require("node:readline");
 
-const { CodexAppServerClient } = require("./app-server-client");
+const {
+  buildApprovalSummary,
+  inferApprovalActionType,
+  inferApprovalRisk,
+  isApprovalMethod,
+  mapCompletedItemEvent,
+  CodexAppServerClient
+} = require("./app-server-client");
 const { mapCodexJsonlLine } = require("./codex-event-parser");
 const { safeJsonParse } = require("./utils");
 
@@ -227,6 +234,7 @@ class CodexCliManager {
       ...(session.runtime || {}),
       processId: input.processId || null,
       realCodex: input.realCodex || null,
+      proxyMode: input.proxyMode || null,
       launchedAt: input.launchedAt || new Date().toISOString(),
       wrapperReported: true
     };
@@ -245,11 +253,256 @@ class CodexCliManager {
       payload: {
         processId: runtime.processId,
         realCodex: runtime.realCodex,
+        proxyMode: runtime.proxyMode,
         argv: Array.isArray(input.argv) ? input.argv : []
       }
     });
 
     return this.registry.getSession(hostSessionId);
+  }
+
+  async recordWrapperEvent(hostSessionId, input) {
+    const session = this.registry.getSession(hostSessionId);
+    if (!session) {
+      const error = new Error(`Unknown wrapper session: ${hostSessionId}`);
+      error.statusCode = 404;
+      throw error;
+    }
+
+    const direction = input.direction || "stdout";
+    if (direction === "stderr") {
+      this.registry.appendEvent(hostSessionId, {
+        kind: "stderr",
+        controllability: "observed",
+        payload: {
+          line: input.line || "",
+          source: "wrapper-proxy"
+        }
+      });
+      return this.registry.getSession(hostSessionId);
+    }
+
+    const parsed = input.message || safeJsonParse(input.line || "");
+    const message = parsed && parsed.ok === false
+      ? null
+      : (parsed && Object.prototype.hasOwnProperty.call(parsed, "value") ? parsed.value : parsed);
+
+    if (!message) {
+      this.registry.appendEvent(hostSessionId, {
+        kind: direction === "stdin" ? "raw_stdin" : "raw_stdout",
+        controllability: "observed",
+        payload: {
+          line: input.line || "",
+          source: "wrapper-proxy"
+        }
+      });
+      return this.registry.getSession(hostSessionId);
+    }
+
+    if (direction === "stdin") {
+      this.recordWrapperClientMessage(hostSessionId, message, input);
+      return this.registry.getSession(hostSessionId);
+    }
+
+    this.recordWrapperServerMessage(hostSessionId, message);
+    return this.registry.getSession(hostSessionId);
+  }
+
+  recordWrapperClientMessage(hostSessionId, message, input) {
+    if (Object.prototype.hasOwnProperty.call(message, "id") && !message.method && input.relatedApprovalMethod) {
+      const approval = this.findPendingApprovalByRpcRequestId(hostSessionId, message.id);
+      if (approval) {
+        this.registry.resolveApproval(approval.requestId, {
+          decision: inferObservedApprovalDecision(message),
+          decidedBy: "client",
+          reason: "wrapper_proxy_observed",
+          controllability: "observed"
+        });
+      }
+
+      this.registry.appendEvent(hostSessionId, {
+        kind: "approval_result_observed",
+        controllability: "observed",
+        payload: {
+          rpcRequestId: message.id,
+          method: input.relatedApprovalMethod,
+          result: message.result || null,
+          error: message.error || null
+        }
+      });
+      return;
+    }
+
+    this.registry.appendEvent(hostSessionId, {
+      kind: "client_message_observed",
+      controllability: "observed",
+      payload: message
+    });
+  }
+
+  recordWrapperServerMessage(hostSessionId, message) {
+    if (message.method && Object.prototype.hasOwnProperty.call(message, "id")) {
+      if (isApprovalMethod(message.method)) {
+        const approval = this.registry.createApproval(hostSessionId, {
+          riskLevel: inferApprovalRisk(message.method),
+          actionType: inferApprovalActionType(message.method),
+          summary: buildApprovalSummary(message.method, message.params || {}),
+          rawRequest: {
+            rpcRequestId: message.id,
+            method: message.method,
+            params: message.params || {},
+            source: "wrapper-proxy"
+          },
+          controllability: "observed"
+        });
+        this.registry.appendEvent(hostSessionId, {
+          kind: "approval_request_observed",
+          controllability: "observed",
+          payload: {
+            requestId: approval.requestId,
+            method: message.method,
+            rpcRequestId: message.id,
+            source: "wrapper-proxy"
+          }
+        });
+        return;
+      }
+
+      this.registry.appendEvent(hostSessionId, {
+        kind: "server_request",
+        controllability: "observed",
+        payload: {
+          source: "wrapper-proxy",
+          message
+        }
+      });
+      return;
+    }
+
+    if (message.method) {
+      this.applyWrapperNotification(hostSessionId, message);
+      return;
+    }
+
+    this.registry.appendEvent(hostSessionId, {
+      kind: "raw_rpc_response",
+      controllability: "observed",
+      payload: {
+        source: "wrapper-proxy",
+        message
+      }
+    });
+  }
+
+  applyWrapperNotification(hostSessionId, message) {
+    const method = message.method;
+    const params = message.params || {};
+
+    if (method === "thread/started" && params.thread && params.thread.id) {
+      this.registry.bindUpstreamSession(hostSessionId, params.thread.id);
+      this.registry.appendEvent(hostSessionId, {
+        kind: "session_started",
+        controllability: "observed",
+        payload: {
+          source: "wrapper-proxy",
+          thread: params.thread
+        }
+      });
+      return;
+    }
+
+    if (method === "turn/started") {
+      this.registry.updateSession(hostSessionId, { status: "running" });
+      this.registry.appendEvent(hostSessionId, {
+        kind: "turn_started",
+        controllability: "observed",
+        payload: params
+      });
+      return;
+    }
+
+    if (method === "turn/completed" || method === "codex/event/task_complete") {
+      this.registry.updateSession(hostSessionId, { status: "running" });
+      this.registry.appendEvent(hostSessionId, {
+        kind: "turn_completed",
+        controllability: "observed",
+        payload: params
+      });
+      return;
+    }
+
+    if (method === "item/agentMessage/delta") {
+      this.registry.appendEvent(hostSessionId, {
+        kind: "assistant_output_delta",
+        controllability: "observed",
+        payload: {
+          text: params.delta || "",
+          raw: params
+        }
+      });
+      return;
+    }
+
+    if (method === "codex/event/agent_message_content_delta") {
+      const msg = params.msg || {};
+      this.registry.appendEvent(hostSessionId, {
+        kind: "assistant_output_delta",
+        controllability: "observed",
+        payload: {
+          text: msg.delta || "",
+          raw: {
+            threadId: msg.thread_id || null,
+            turnId: msg.turn_id || null,
+            itemId: msg.item_id || null,
+            delta: msg.delta || ""
+          }
+        }
+      });
+      return;
+    }
+
+    if (method === "item/completed" || method === "codex/event/item_completed") {
+      const mapped = mapCompletedItemEvent(normalizeWrapperCompletedParams(message));
+      if (mapped) {
+        mapped.controllability = "observed";
+        this.registry.appendEvent(hostSessionId, mapped);
+        return;
+      }
+    }
+
+    if (method === "thread/compacted") {
+      this.registry.appendEvent(hostSessionId, {
+        kind: "context_compacted",
+        controllability: "observed",
+        payload: params
+      });
+      return;
+    }
+
+    if (method === "error") {
+      this.registry.updateSession(hostSessionId, { status: "failed" });
+      this.registry.appendEvent(hostSessionId, {
+        kind: "error",
+        controllability: "observed",
+        payload: params
+      });
+      return;
+    }
+
+    this.registry.appendEvent(hostSessionId, {
+      kind: "raw_event",
+      controllability: "observed",
+      payload: {
+        source: "wrapper-proxy",
+        message
+      }
+    });
+  }
+
+  findPendingApprovalByRpcRequestId(hostSessionId, rpcRequestId) {
+    return this.registry.listApprovals({ hostSessionId, status: "pending" }).find((approval) => {
+      return approval.rawRequest && approval.rawRequest.rpcRequestId === rpcRequestId;
+    }) || null;
   }
 
   async markWrapperCompleted(hostSessionId, input) {
@@ -559,6 +812,84 @@ class CodexCliManager {
   }
 }
 
+function normalizeWrapperCompletedParams(message) {
+  const params = message.params || {};
+  if (message.method === "item/completed") {
+    return params;
+  }
+
+  if (message.method === "codex/event/item_completed") {
+    const msg = params.msg || {};
+    return {
+      item: normalizeWrapperItem(msg.item || {}),
+      threadId: msg.thread_id || null,
+      turnId: msg.turn_id || null
+    };
+  }
+
+  return params;
+}
+
+function normalizeWrapperItem(item) {
+  if (!item || !item.type) {
+    return item;
+  }
+
+  if (item.type === "AgentMessage") {
+    return {
+      type: "agentMessage",
+      id: item.id,
+      text: extractWrapperText(item),
+      phase: item.phase || null
+    };
+  }
+
+  if (item.type === "UserMessage") {
+    return {
+      type: "userMessage",
+      id: item.id,
+      text: extractWrapperText(item)
+    };
+  }
+
+  return item;
+}
+
+function extractWrapperText(item) {
+  if (typeof item.text === "string") {
+    return item.text;
+  }
+
+  if (Array.isArray(item.content)) {
+    return item.content
+      .filter((entry) => entry && (entry.type === "Text" || entry.type === "text"))
+      .map((entry) => entry.text || "")
+      .join("");
+  }
+
+  return "";
+}
+
+function inferObservedApprovalDecision(message) {
+  if (message.error) {
+    return "deny";
+  }
+
+  if (message.result && message.result.permissions) {
+    return "approve";
+  }
+
+  if (message.result && message.result.decision === "accept") {
+    return "approve";
+  }
+
+  if (message.result && message.result.decision === "decline") {
+    return "deny";
+  }
+
+  return "approve";
+}
+
 function wrapperManagedCapabilities() {
   return {
     sessionRegistration: "supported",
@@ -627,3 +958,5 @@ function escapeDoubleQuotes(value) {
 module.exports = {
   CodexCliManager
 };
+
+

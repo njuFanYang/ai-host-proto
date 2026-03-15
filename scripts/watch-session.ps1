@@ -85,6 +85,9 @@ function Write-SessionSummary {
   if ($Session.runtime.realCodex) {
     Write-Output "Real Codex:   $($Session.runtime.realCodex)"
   }
+  if ($Session.runtime.proxyMode) {
+    Write-Output "Proxy Mode:   $($Session.runtime.proxyMode)"
+  }
   if ($Session.runtime.launchedAt) {
     Write-Output "Launched At:  $($Session.runtime.launchedAt)"
   }
