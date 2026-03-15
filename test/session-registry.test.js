@@ -53,3 +53,35 @@ test("SessionRegistry marks session waiting on approval and returns to running o
 
   assert.equal(registry.getSession(record.hostSessionId).status, "running");
 });
+
+
+test("SessionRegistry reloads persisted sessions and approvals from disk", () => {
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ai-host-proto-"));
+  const registry = new SessionRegistry({ projectRoot });
+
+  const record = registry.createSession({
+    source: "cli",
+    transport: "exec-json",
+    workspaceRoot: projectRoot
+  });
+  registry.updateSession(record.hostSessionId, { status: "running" });
+  const approval = registry.createApproval(record.hostSessionId, {
+    riskLevel: "high",
+    actionType: "shell",
+    summary: "needs review"
+  });
+  registry.resolveApproval(approval.requestId, {
+    decision: "approve",
+    decidedBy: "human",
+    controllability: "controllable"
+  });
+
+  const restored = new SessionRegistry({ projectRoot });
+  const restoredSession = restored.getSession(record.hostSessionId);
+  const restoredApproval = restored.getApproval(approval.requestId);
+
+  assert.equal(restoredSession.hostSessionId, record.hostSessionId);
+  assert.equal(restoredSession.status, "running");
+  assert.equal(restoredApproval.status, "resolved");
+  assert.equal(restoredApproval.decision.decision, "approve");
+});

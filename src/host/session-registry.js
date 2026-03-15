@@ -18,6 +18,7 @@ class SessionRegistry {
     this.records = new Map();
     this.events = new Map();
     this.approvals = new Map();
+    this.loadPersistedSessions();
   }
 
   createSession(input) {
@@ -139,6 +140,22 @@ class SessionRegistry {
     return this.approvals.get(requestId) || null;
   }
 
+  listApprovals(filter = {}) {
+    let approvals = Array.from(this.approvals.values());
+
+    if (filter.hostSessionId) {
+      approvals = approvals.filter((approval) => approval.hostSessionId === filter.hostSessionId);
+    }
+
+    if (filter.status) {
+      approvals = approvals.filter((approval) => approval.status === filter.status);
+    }
+
+    return approvals.sort((left, right) =>
+      left.createdAt < right.createdAt ? 1 : -1
+    );
+  }
+
   resolveApproval(requestId, decision) {
     const approval = this.getApproval(requestId);
     if (!approval) {
@@ -176,6 +193,54 @@ class SessionRegistry {
       events: this.listEvents(hostSessionId)
     };
     fs.writeFileSync(filePath, JSON.stringify(payload, null, 2));
+  }
+
+  loadPersistedSessions() {
+    const files = fs
+      .readdirSync(this.sessionsDir, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.endsWith('.json'));
+
+    for (const file of files) {
+      const filePath = path.join(this.sessionsDir, file.name);
+      try {
+        const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+        if (!parsed || !parsed.record || !parsed.record.hostSessionId) {
+          continue;
+        }
+
+        const hostSessionId = parsed.record.hostSessionId;
+        this.records.set(hostSessionId, parsed.record);
+        this.events.set(hostSessionId, Array.isArray(parsed.events) ? parsed.events : []);
+        this.rebuildApprovalsFromEvents(hostSessionId);
+      } catch (_error) {
+        // Ignore corrupt session files and keep loading the rest.
+      }
+    }
+  }
+
+  rebuildApprovalsFromEvents(hostSessionId) {
+    const events = this.listEvents(hostSessionId);
+    for (const event of events) {
+      if (event.kind === 'approval_request' && event.payload && event.payload.requestId) {
+        this.approvals.set(event.payload.requestId, {
+          ...event.payload
+        });
+      }
+
+      if (event.kind === 'approval_result' && event.payload && event.payload.requestId) {
+        const approval = this.approvals.get(event.payload.requestId);
+        if (!approval) {
+          continue;
+        }
+
+        approval.status = 'resolved';
+        approval.decision = {
+          decision: event.payload.decision,
+          decidedBy: event.payload.decidedBy,
+          reason: event.payload.reason || null
+        };
+      }
+    }
   }
 }
 

@@ -31,6 +31,14 @@ const server = http.createServer(async (req, res) => {
       });
     }
 
+    if (req.method === "GET" && url.pathname === "/approvals") {
+      const status = url.searchParams.get("status");
+      const approvals = approvalService.listApprovals({
+        status: status || undefined
+      });
+      return sendJson(res, 200, { approvals });
+    }
+
     if (req.method === "GET" && url.pathname.startsWith("/approvals/")) {
       const requestId = decodeURIComponent(url.pathname.split("/")[2]);
       const approval = registry.getApproval(requestId);
@@ -83,6 +91,13 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, 200, {
           hostSessionId,
           events: registry.listEvents(hostSessionId)
+        });
+      }
+
+      if (url.pathname.endsWith("/approvals")) {
+        return sendJson(res, 200, {
+          hostSessionId,
+          approvals: approvalService.listApprovals({ hostSessionId })
         });
       }
 

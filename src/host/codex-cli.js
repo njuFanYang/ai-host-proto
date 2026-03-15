@@ -41,8 +41,10 @@ class CodexCliManager {
     if (session.transport === "exec-json") {
       if (this.activeRuns.has(hostSessionId)) {
         this.registry.updateSession(hostSessionId, { status: "running" });
+        return this.registry.getSession(hostSessionId);
       }
-      return this.registry.getSession(hostSessionId);
+
+      return this.refreshDetachedProcessSession(session);
     }
 
     return session;
@@ -328,7 +330,12 @@ class CodexCliManager {
 
     this.activeRuns.set(hostSessionId, child);
     this.registry.updateSession(hostSessionId, {
-      status: "running"
+      status: "running",
+      runtime: {
+        ...(session.runtime || {}),
+        processId: child.pid,
+        launchedAt: new Date().toISOString()
+      }
     });
 
     const stdoutReader = readline.createInterface({ input: child.stdout });
@@ -398,6 +405,35 @@ class CodexCliManager {
         reject(error);
       });
     });
+  }
+
+  refreshDetachedProcessSession(session) {
+    const processId = session.runtime && session.runtime.processId;
+    if (!processId) {
+      return session;
+    }
+
+    const isAlive = processExists(processId);
+    if (isAlive) {
+      if (session.status !== "running") {
+        this.registry.updateSession(session.hostSessionId, { status: "running" });
+      }
+      return this.registry.getSession(session.hostSessionId);
+    }
+
+    if (session.status === "running" || session.status === "starting" || session.status === "waiting_approval") {
+      this.registry.updateSession(session.hostSessionId, { status: "ended" });
+      this.registry.appendEvent(session.hostSessionId, {
+        kind: "session_ended",
+        controllability: "observed",
+        payload: {
+          reason: "process_not_running",
+          processId
+        }
+      });
+    }
+
+    return this.registry.getSession(session.hostSessionId);
   }
 
   refreshTtySession(session) {

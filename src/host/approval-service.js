@@ -4,6 +4,10 @@ class ApprovalService {
     this.policyEngine = options.policyEngine;
   }
 
+  listApprovals(filter = {}) {
+    return this.registry.listApprovals(filter);
+  }
+
   createApproval(hostSessionId, input) {
     const session = this.registry.getSession(hostSessionId);
     if (!session) {
@@ -58,7 +62,8 @@ class ApprovalService {
       throw error;
     }
 
-    if (session.transportCapabilities.autoHitl !== "supported") {
+    const decidedBy = input.decidedBy || "human";
+    if (decidedBy !== "human" && session.transportCapabilities.autoHitl !== "supported") {
       return {
         ok: false,
         error: "needs-human-fallback",
@@ -68,7 +73,7 @@ class ApprovalService {
 
     this.registry.resolveApproval(requestId, {
       decision: input.decision || "escalate",
-      decidedBy: input.decidedBy || "human",
+      decidedBy,
       reason: input.reason || null,
       controllability: "controllable"
     });

@@ -59,3 +59,36 @@ test("ApprovalService requests human fallback for app-server sessions", () => {
   assert.equal(result.needsHumanFallback, true);
   assert.equal(result.approval.status, "pending");
 });
+
+
+test("ApprovalService allows human resolution for app-server sessions", () => {
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ai-host-proto-"));
+  const registry = new SessionRegistry({ projectRoot });
+  const service = new ApprovalService({
+    registry,
+    policyEngine: new PolicyEngine()
+  });
+
+  const session = registry.createSession({
+    source: "ide",
+    transport: "app-server",
+    workspaceRoot: projectRoot
+  });
+  registry.updateSession(session.hostSessionId, { status: "running" });
+
+  const created = service.createApproval(session.hostSessionId, {
+    riskLevel: "high",
+    actionType: "shell",
+    summary: "needs manual decision"
+  });
+
+  const resolved = service.resolveApproval(created.approval.requestId, {
+    decision: "approve",
+    decidedBy: "human",
+    reason: "manual override"
+  });
+
+  assert.equal(resolved.ok, true);
+  assert.equal(resolved.approval.status, "resolved");
+  assert.equal(resolved.approval.decision.decision, "approve");
+});

@@ -114,6 +114,20 @@ powershell -ExecutionPolicy Bypass -File scripts\register-shell-commands.ps1 -Us
 powershell -ExecutionPolicy Bypass -File scripts\register-shell-commands.ps1 -SessionOnly
 ```
 
+审批队列也可以直接用命令处理：
+
+```powershell
+bin\codex-approvals.cmd -Once
+bin\codex-approvals.cmd -SessionId <hostSessionId> -Once
+bin\codex-approve.cmd <requestId> -Decision approve -Reason "manual override"
+```
+
+如果你已经把 `bin` 注册进 PATH：
+
+```powershell
+codex-approvals -Once
+codex-approve <requestId> -Decision approve -Reason "manual override"
+```
 监督 session 可以直接用：
 
 ```powershell
@@ -314,6 +328,8 @@ session 数据当前落在本地：
 ```txt
 .host-data/sessions/
 ```
+
+每个 managed session 对应一个 JSON 文件，host 重启后会自动重新载入这些 session。
 
 每个 managed session 对应一个 JSON 文件，包含：
 
