@@ -2,7 +2,7 @@ const { spawn } = require("node:child_process");
 const path = require("node:path");
 const readline = require("node:readline");
 
-const { ensureDir, resolveDataRoot, safeJsonParse } = require("./utils");
+const { ensureDir, safeJsonParse } = require("./utils");
 
 class CodexAppServerClient {
   constructor(options) {
@@ -10,8 +10,10 @@ class CodexAppServerClient {
     this.projectRoot = options.projectRoot;
     this.spawnFn = options.spawnFn || spawn;
     this.connections = new Map();
-    this.codexHome = path.join(resolveDataRoot(this.projectRoot), "codex-home");
-    ensureDir(this.codexHome);
+    this.codexHome = options.codexHome || process.env.AI_HOST_CODEX_HOME || process.env.CODEX_HOME || null;
+    if (this.codexHome) {
+      ensureDir(this.codexHome);
+    }
   }
 
   async launchCliSession(input) {
@@ -131,7 +133,7 @@ class CodexAppServerClient {
     }
 
     const rawRequest = approval.rawRequest || {};
-    if (!rawRequest.rpcRequestId || !rawRequest.method) {
+    if (rawRequest.rpcRequestId === undefined || rawRequest.rpcRequestId === null || !rawRequest.method) {
       return {
         handled: true,
         ok: false,
@@ -175,10 +177,7 @@ class CodexAppServerClient {
     const child = this.spawnFn("cmd.exe", ["/d", "/s", "/c", "codex", "app-server"], {
       cwd: input.cwd,
       stdio: ["pipe", "pipe", "pipe"],
-      env: {
-        ...process.env,
-        CODEX_HOME: this.codexHome
-      }
+      env: buildAppServerEnv(this.codexHome)
     });
 
     const connection = {
@@ -187,7 +186,11 @@ class CodexAppServerClient {
       pending: new Map(),
       initialized: false,
       exited: false,
-      inFlightTurn: false
+      inFlightTurn: false,
+      currentTurnId: null,
+      pollTimer: null,
+      pollAttempts: 0,
+      seenItemIds: new Set()
     };
     this.connections.set(hostSessionId, connection);
 
@@ -197,7 +200,7 @@ class CodexAppServerClient {
         ...(this.registry.getSession(hostSessionId).runtime || {}),
         processId: child.pid,
         launchedAt: new Date().toISOString(),
-        codexHome: this.codexHome
+        codexHome: this.codexHome || null
       }
     });
 
@@ -217,6 +220,7 @@ class CodexAppServerClient {
 
     child.on("error", (error) => {
       connection.exited = true;
+      this.stopPolling(connection);
       this.rejectPending(connection, error);
       this.registry.failRegistration(hostSessionId, error.message);
       this.registry.appendEvent(hostSessionId, {
@@ -231,6 +235,7 @@ class CodexAppServerClient {
     child.on("exit", (code, signal) => {
       connection.exited = true;
       connection.inFlightTurn = false;
+      this.stopPolling(connection);
       this.rejectPending(connection, new Error(`codex app-server exited with code ${code}`));
       this.registry.updateSession(hostSessionId, {
         status: code === 0 ? "ended" : "failed"
@@ -294,8 +299,12 @@ class CodexAppServerClient {
     }
 
     connection.inFlightTurn = true;
+    connection.currentTurnId = null;
+    connection.pollAttempts = 0;
+    connection.seenItemIds.clear();
+
     try {
-      await this.sendRpc(hostSessionId, "turn/start", {
+      const response = await this.sendRpc(hostSessionId, "turn/start", {
         threadId: session.upstreamSessionId,
         input: [
           {
@@ -304,9 +313,141 @@ class CodexAppServerClient {
           }
         ]
       });
+
+      connection.currentTurnId = response && response.turn ? response.turn.id : null;
+      this.startPolling(hostSessionId);
     } catch (error) {
       connection.inFlightTurn = false;
       throw error;
+    }
+  }
+
+  startPolling(hostSessionId) {
+    const connection = this.connections.get(hostSessionId);
+    if (!connection || connection.exited) {
+      return;
+    }
+
+    this.stopPolling(connection);
+    connection.pollTimer = setTimeout(() => {
+      this.pollTurnState(hostSessionId).catch((error) => {
+        this.handlePollError(hostSessionId, error);
+      });
+    }, 1500);
+  }
+
+  stopPolling(connection) {
+    if (connection && connection.pollTimer) {
+      clearTimeout(connection.pollTimer);
+      connection.pollTimer = null;
+    }
+  }
+
+  async pollTurnState(hostSessionId) {
+    const session = this.registry.getSession(hostSessionId);
+    const connection = this.connections.get(hostSessionId);
+    if (!session || !connection || connection.exited || !connection.inFlightTurn || !session.upstreamSessionId) {
+      return;
+    }
+
+    connection.pollAttempts += 1;
+    const readResult = await this.sendRpc(hostSessionId, "thread/read", {
+      threadId: session.upstreamSessionId,
+      includeTurns: true
+    });
+
+    const snapshot = extractTurnSnapshot(readResult, connection.currentTurnId, connection.seenItemIds);
+    if (snapshot.turnFound) {
+      this.applyTurnSnapshot(hostSessionId, snapshot);
+    }
+
+    if (!snapshot.turnFound || snapshot.turnStatus === "inProgress") {
+      if (connection.pollAttempts >= 20) {
+        connection.inFlightTurn = false;
+        this.stopPolling(connection);
+        this.registry.appendEvent(hostSessionId, {
+          kind: "turn_stalled",
+          controllability: "observed",
+          payload: {
+            turnId: connection.currentTurnId,
+            pollAttempts: connection.pollAttempts
+          }
+        });
+        return;
+      }
+
+      this.startPolling(hostSessionId);
+    }
+  }
+
+  handlePollError(hostSessionId, error) {
+    const connection = this.connections.get(hostSessionId);
+    if (!connection || connection.exited || !connection.inFlightTurn) {
+      return;
+    }
+
+    const retryable = isRetryableThreadReadError(error);
+    this.registry.appendEvent(hostSessionId, {
+      kind: retryable ? "thread_read_retry" : "error",
+      controllability: "observed",
+      payload: {
+        message: error.message,
+        pollAttempts: connection.pollAttempts,
+        retryable
+      }
+    });
+
+    if (retryable && connection.pollAttempts < 20) {
+      this.startPolling(hostSessionId);
+      return;
+    }
+
+    connection.inFlightTurn = false;
+    this.stopPolling(connection);
+  }
+
+  applyTurnSnapshot(hostSessionId, snapshot) {
+    const connection = this.connections.get(hostSessionId);
+
+    for (const item of snapshot.newItems) {
+      const mapped = mapThreadItemEvent(item, snapshot.turnId);
+      if (mapped) {
+        this.registry.appendEvent(hostSessionId, mapped);
+      }
+    }
+
+    if (snapshot.turnStatus === "completed") {
+      if (connection) {
+        connection.inFlightTurn = false;
+        this.stopPolling(connection);
+      }
+      this.registry.updateSession(hostSessionId, { status: "running" });
+      this.registry.appendEvent(hostSessionId, {
+        kind: "turn_completed",
+        controllability: "controllable",
+        payload: {
+          turnId: snapshot.turnId,
+          source: "thread_read"
+        }
+      });
+      return;
+    }
+
+    if (snapshot.turnStatus === "failed" || snapshot.turnStatus === "interrupted") {
+      if (connection) {
+        connection.inFlightTurn = false;
+        this.stopPolling(connection);
+      }
+      this.registry.updateSession(hostSessionId, { status: snapshot.turnStatus === "failed" ? "failed" : "running" });
+      this.registry.appendEvent(hostSessionId, {
+        kind: snapshot.turnStatus === "failed" ? "error" : "turn_interrupted",
+        controllability: "controllable",
+        payload: {
+          turnId: snapshot.turnId,
+          error: snapshot.turnError || null,
+          source: "thread_read"
+        }
+      });
     }
   }
 
@@ -356,7 +497,11 @@ class CodexAppServerClient {
           payload: message.params || {}
         });
         return;
-      case "turn/started":
+      case "turn/started": {
+        const connection = this.connections.get(hostSessionId);
+        if (connection && message.params && message.params.turn && message.params.turn.id) {
+          connection.currentTurnId = message.params.turn.id;
+        }
         this.registry.updateSession(hostSessionId, { status: "running" });
         this.registry.appendEvent(hostSessionId, {
           kind: "turn_started",
@@ -364,10 +509,12 @@ class CodexAppServerClient {
           payload: message.params || {}
         });
         return;
+      }
       case "turn/completed": {
         const connection = this.connections.get(hostSessionId);
         if (connection) {
           connection.inFlightTurn = false;
+          this.stopPolling(connection);
         }
         this.registry.updateSession(hostSessionId, { status: "running" });
         this.registry.appendEvent(hostSessionId, {
@@ -387,9 +534,18 @@ class CodexAppServerClient {
           }
         });
         return;
-      case "item/completed":
-        this.registry.appendEvent(hostSessionId, mapCompletedItemEvent(message.params || {}));
+      case "item/completed": {
+        const connection = this.connections.get(hostSessionId);
+        const item = message.params && message.params.item ? message.params.item : null;
+        if (connection && item && item.id) {
+          connection.seenItemIds.add(item.id);
+        }
+        const mapped = mapCompletedItemEvent(message.params || {});
+        if (mapped) {
+          this.registry.appendEvent(hostSessionId, mapped);
+        }
         return;
+      }
       case "thread/compacted":
         this.registry.appendEvent(hostSessionId, {
           kind: "context_compacted",
@@ -401,6 +557,7 @@ class CodexAppServerClient {
         const connection = this.connections.get(hostSessionId);
         if (connection) {
           connection.inFlightTurn = false;
+          this.stopPolling(connection);
         }
         this.registry.updateSession(hostSessionId, { status: "failed" });
         this.registry.appendEvent(hostSessionId, {
@@ -530,8 +687,120 @@ class CodexAppServerClient {
   }
 }
 
+function buildAppServerEnv(codexHome) {
+  if (!codexHome) {
+    return {
+      ...process.env
+    };
+  }
+
+  return {
+    ...process.env,
+    CODEX_HOME: codexHome
+  };
+}
+
+function extractTurnSnapshot(readResult, currentTurnId, seenItemIds) {
+  const turns = readResult && readResult.thread && Array.isArray(readResult.thread.turns)
+    ? readResult.thread.turns
+    : [];
+  const turn = turns.find((entry) => entry.id === currentTurnId) || null;
+  if (!turn) {
+    return {
+      turnFound: false,
+      turnId: currentTurnId,
+      turnStatus: null,
+      turnError: null,
+      newItems: []
+    };
+  }
+
+  const newItems = [];
+  for (const item of Array.isArray(turn.items) ? turn.items : []) {
+    if (!item || !item.id || seenItemIds.has(item.id)) {
+      continue;
+    }
+    seenItemIds.add(item.id);
+    newItems.push(item);
+  }
+
+  return {
+    turnFound: true,
+    turnId: turn.id,
+    turnStatus: turn.status || null,
+    turnError: turn.error || null,
+    newItems
+  };
+}
+
+function mapThreadItemEvent(item, turnId) {
+  if (!item || item.type === "userMessage") {
+    return null;
+  }
+
+  if (item.type === "agentMessage") {
+    return {
+      kind: "assistant_output",
+      controllability: "controllable",
+      payload: {
+        text: item.text || "",
+        turnId,
+        raw: item
+      }
+    };
+  }
+
+  if (item.type === "plan") {
+    return {
+      kind: "plan_output",
+      controllability: "controllable",
+      payload: {
+        text: item.text || "",
+        turnId,
+        raw: item
+      }
+    };
+  }
+
+  if (item.type === "reasoning") {
+    return {
+      kind: "reasoning_output",
+      controllability: "controllable",
+      payload: {
+        summary: item.summary || [],
+        content: item.content || [],
+        turnId,
+        raw: item
+      }
+    };
+  }
+
+  return {
+    kind: "tool_result",
+    controllability: "controllable",
+    payload: {
+      turnId,
+      item
+    }
+  };
+}
+
+function isRetryableThreadReadError(error) {
+  if (!error || !error.message) {
+    return false;
+  }
+
+  return error.message.includes("empty session file") ||
+    error.message.includes("state db discrepancy") ||
+    error.message.includes("failed to load rollout");
+}
+
 function mapCompletedItemEvent(params) {
   const item = params.item || {};
+  if (!item || item.type === "userMessage") {
+    return null;
+  }
+
   if (item.type === "agentMessage") {
     return {
       kind: "assistant_output",
@@ -632,10 +901,14 @@ function mapApprovalDecisionToRpcResult(method, params, input) {
 
 module.exports = {
   CodexAppServerClient,
+  buildAppServerEnv,
   buildApprovalSummary,
+  extractTurnSnapshot,
   inferApprovalActionType,
   inferApprovalRisk,
   isApprovalMethod,
+  isRetryableThreadReadError,
   mapApprovalDecisionToRpcResult,
-  mapCompletedItemEvent
+  mapCompletedItemEvent,
+  mapThreadItemEvent
 };
