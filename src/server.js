@@ -1,9 +1,10 @@
-﻿const http = require("node:http");
+const http = require("node:http");
 const path = require("node:path");
 
 const { ApprovalService } = require("./host/approval-service");
 const { CodexCliManager } = require("./host/codex-cli");
 const { PolicyEngine } = require("./host/policy-engine");
+const { SessionControlService } = require("./host/session-control-service");
 const { SessionRegistry } = require("./host/session-registry");
 
 function createHostServer(options = {}) {
@@ -11,10 +12,15 @@ function createHostServer(options = {}) {
   const registry = options.registry || new SessionRegistry({ projectRoot });
   const policyEngine = options.policyEngine || new PolicyEngine();
   const manager = options.manager || new CodexCliManager({ registry, projectRoot });
+  const sessionControl = options.sessionControl || new SessionControlService({
+    registry,
+    manager
+  });
   const approvalService = options.approvalService || new ApprovalService({
     registry,
     policyEngine,
-    decisionHandler: (approval, decision) => manager.handleApprovalDecision(approval, decision)
+    decisionHandler: (approval, decision) => manager.handleApprovalDecision(approval, decision),
+    onResolved: (approval) => sessionControl.drainQueue(approval.hostSessionId)
   });
 
   const server = http.createServer(async (req, res) => {
@@ -157,6 +163,20 @@ function createHostServer(options = {}) {
           });
         }
 
+        if (url.pathname.endsWith("/controllers")) {
+          return sendJson(res, 200, {
+            hostSessionId,
+            controllers: sessionControl.listControllers(hostSessionId)
+          });
+        }
+
+        if (url.pathname.endsWith("/inputs")) {
+          return sendJson(res, 200, {
+            hostSessionId,
+            inputs: sessionControl.listInputs(hostSessionId)
+          });
+        }
+
         const session = manager.refreshSession(hostSessionId) || registry.getSession(hostSessionId);
         if (!session) {
           return sendJson(res, 404, { error: "session_not_found" });
@@ -173,17 +193,46 @@ function createHostServer(options = {}) {
           return sendJson(res, 400, { error: "missing_prompt" });
         }
 
-        await manager.sendMessage(hostSessionId, prompt);
+        const inputRecord = await sessionControl.submitMessage(hostSessionId, prompt, body || {});
         return sendJson(res, 202, {
           hostSessionId,
-          accepted: true
+          accepted: true,
+          input: inputRecord
+        });
+      }
+
+      if (req.method === "POST" && url.pathname.startsWith("/sessions/") && url.pathname.endsWith("/controllers/attach")) {
+        const hostSessionId = decodeURIComponent(url.pathname.split("/")[2]);
+        const body = await readJson(req);
+        const controller = sessionControl.attachController(hostSessionId, body || {});
+        return sendJson(res, 200, {
+          hostSessionId,
+          controller
+        });
+      }
+
+      if (req.method === "POST" && url.pathname.startsWith("/sessions/") && url.pathname.endsWith("/controllers/detach")) {
+        const hostSessionId = decodeURIComponent(url.pathname.split("/")[2]);
+        const body = await readJson(req);
+        if (!body || !body.controllerId) {
+          return sendJson(res, 400, { error: "missing_controller_id" });
+        }
+
+        const controller = sessionControl.detachController(hostSessionId, body.controllerId);
+        if (!controller) {
+          return sendJson(res, 404, { error: "controller_not_found" });
+        }
+
+        return sendJson(res, 200, {
+          hostSessionId,
+          controller
         });
       }
 
       if (req.method === "POST" && url.pathname.startsWith("/sessions/") && url.pathname.endsWith("/approvals")) {
         const hostSessionId = decodeURIComponent(url.pathname.split("/")[2]);
         const body = await readJson(req);
-        const result = approvalService.createApproval(hostSessionId, body || {});
+        const result = await approvalService.createApproval(hostSessionId, body || {});
         return sendJson(res, 201, result);
       }
 
@@ -199,7 +248,8 @@ function createHostServer(options = {}) {
     } catch (error) {
       const statusCode = error.statusCode || 500;
       return sendJson(res, statusCode, {
-        error: error.message
+        error: error.message,
+        code: error.code || null
       });
     }
   });
@@ -210,7 +260,8 @@ function createHostServer(options = {}) {
     registry,
     manager,
     approvalService,
-    policyEngine
+    policyEngine,
+    sessionControl
   };
 }
 
@@ -350,3 +401,4 @@ module.exports = {
   createHostServer,
   startServer
 };
+

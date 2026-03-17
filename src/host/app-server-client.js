@@ -10,6 +10,7 @@ class CodexAppServerClient {
     this.projectRoot = options.projectRoot;
     this.spawnFn = options.spawnFn || spawn;
     this.connections = new Map();
+    this.onSessionAvailable = options.onSessionAvailable || null;
     this.codexHome = options.codexHome || process.env.AI_HOST_CODEX_HOME || process.env.CODEX_HOME || null;
     if (this.codexHome) {
       ensureDir(this.codexHome);
@@ -297,6 +298,9 @@ class CodexAppServerClient {
     }
 
     this.registry.bindUpstreamSession(hostSessionId, threadId);
+    if (typeof this.onSessionAvailable === "function") {
+      void this.onSessionAvailable(hostSessionId);
+    }
     this.registry.appendEvent(hostSessionId, {
       kind: "session_started",
       controllability: "controllable",
@@ -425,6 +429,9 @@ class CodexAppServerClient {
 
     connection.inFlightTurn = false;
     this.stopPolling(connection);
+    if (typeof this.onSessionAvailable === "function") {
+      void this.onSessionAvailable(hostSessionId);
+    }
   }
 
   applyTurnSnapshot(hostSessionId, snapshot) {
@@ -443,6 +450,9 @@ class CodexAppServerClient {
         this.stopPolling(connection);
       }
       this.registry.updateSession(hostSessionId, { status: "running" });
+      if (typeof this.onSessionAvailable === "function") {
+        void this.onSessionAvailable(hostSessionId);
+      }
       this.registry.appendEvent(hostSessionId, {
         kind: "turn_completed",
         controllability: "controllable",
@@ -460,6 +470,9 @@ class CodexAppServerClient {
         this.stopPolling(connection);
       }
       this.registry.updateSession(hostSessionId, { status: snapshot.turnStatus === "failed" ? "failed" : "running" });
+      if (typeof this.onSessionAvailable === "function") {
+        void this.onSessionAvailable(hostSessionId);
+      }
       this.registry.appendEvent(hostSessionId, {
         kind: snapshot.turnStatus === "failed" ? "error" : "turn_interrupted",
         controllability: "controllable",
@@ -512,6 +525,9 @@ class CodexAppServerClient {
         if (message.params && message.params.thread && message.params.thread.id) {
           this.registry.bindUpstreamSession(hostSessionId, message.params.thread.id);
         }
+        if (typeof this.onSessionAvailable === "function") {
+          void this.onSessionAvailable(hostSessionId);
+        }
         this.registry.appendEvent(hostSessionId, {
           kind: "session_started",
           controllability: "controllable",
@@ -538,6 +554,9 @@ class CodexAppServerClient {
           this.stopPolling(connection);
         }
         this.registry.updateSession(hostSessionId, { status: "running" });
+        if (typeof this.onSessionAvailable === "function") {
+          void this.onSessionAvailable(hostSessionId);
+        }
         this.registry.appendEvent(hostSessionId, {
           kind: "turn_completed",
           controllability: "controllable",
@@ -581,6 +600,9 @@ class CodexAppServerClient {
           this.stopPolling(connection);
         }
         this.registry.updateSession(hostSessionId, { status: "failed" });
+        if (typeof this.onSessionAvailable === "function") {
+          void this.onSessionAvailable(hostSessionId);
+        }
         this.registry.appendEvent(hostSessionId, {
           kind: "error",
           controllability: "controllable",
@@ -940,3 +962,7 @@ module.exports = {
   mapCompletedItemEvent,
   mapThreadItemEvent
 };
+
+
+
+

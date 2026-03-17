@@ -21,10 +21,16 @@ class CodexCliManager {
     this.activeRuns = new Map();
     this.wrapperCommandLeaseMs = Number(options.wrapperCommandLeaseMs || 30000);
     this.wrapperCommandMaxRetries = Number(options.wrapperCommandMaxRetries || 3);
+    this.onSessionAvailable = null;
     this.wrapperPath = path.join(this.projectRoot, "bin", "codex-wrapper.cmd");
     this.appServerClient = new CodexAppServerClient({
       registry: this.registry,
-      projectRoot: this.projectRoot
+      projectRoot: this.projectRoot,
+      onSessionAvailable: (hostSessionId) => {
+        if (typeof this.onSessionAvailable === "function") {
+          void this.onSessionAvailable(hostSessionId);
+        }
+      }
     });
   }
 
@@ -80,7 +86,7 @@ class CodexCliManager {
     return this.registry.listSessions().map((session) => this.refreshSession(session.hostSessionId));
   }
 
-  async sendMessage(hostSessionId, prompt) {
+  async dispatchTransportMessage(hostSessionId, prompt) {
     const session = this.registry.getSession(hostSessionId);
     if (!session) {
       const error = new Error(`Unknown session: ${hostSessionId}`);
@@ -131,6 +137,10 @@ class CodexCliManager {
       search: Boolean(session.runtime.search),
       resumeSessionId: session.upstreamSessionId
     });
+  }
+
+  async sendMessage(hostSessionId, prompt) {
+    return this.dispatchTransportMessage(hostSessionId, prompt);
   }
 
   async handleApprovalDecision(approval, input) {
@@ -522,6 +532,9 @@ class CodexCliManager {
 
     if (method === "thread/started" && params.thread && params.thread.id) {
       this.registry.bindUpstreamSession(hostSessionId, params.thread.id);
+      if (typeof this.onSessionAvailable === "function") {
+        void this.onSessionAvailable(hostSessionId);
+      }
       this.registry.appendEvent(hostSessionId, {
         kind: "session_started",
         controllability: "observed",
@@ -545,6 +558,9 @@ class CodexCliManager {
 
     if (method === "turn/completed" || method === "codex/event/task_complete") {
       this.registry.updateSession(hostSessionId, { status: "running" });
+      if (typeof this.onSessionAvailable === "function") {
+        void this.onSessionAvailable(hostSessionId);
+      }
       this.registry.appendEvent(hostSessionId, {
         kind: "turn_completed",
         controllability: "observed",
@@ -603,6 +619,9 @@ class CodexCliManager {
 
     if (method === "error") {
       this.registry.updateSession(hostSessionId, { status: "failed" });
+      if (typeof this.onSessionAvailable === "function") {
+        void this.onSessionAvailable(hostSessionId);
+      }
       this.registry.appendEvent(hostSessionId, {
         kind: "error",
         controllability: "observed",
@@ -835,8 +854,15 @@ class CodexCliManager {
         });
 
         if (code === 0) {
+          if (typeof this.onSessionAvailable === "function") {
+            void this.onSessionAvailable(hostSessionId);
+          }
           resolve(this.registry.getSession(hostSessionId));
           return;
+        }
+
+        if (typeof this.onSessionAvailable === "function") {
+          void this.onSessionAvailable(hostSessionId);
         }
 
         const error = new Error(`codex exited with code ${code}`);
@@ -1088,6 +1114,10 @@ function escapeDoubleQuotes(value) {
 module.exports = {
   CodexCliManager
 };
+
+
+
+
 
 
 

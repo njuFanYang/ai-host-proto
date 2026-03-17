@@ -3,13 +3,14 @@ class ApprovalService {
     this.registry = options.registry;
     this.policyEngine = options.policyEngine;
     this.decisionHandler = options.decisionHandler || null;
+    this.onResolved = options.onResolved || null;
   }
 
   listApprovals(filter = {}) {
     return this.registry.listApprovals(filter);
   }
 
-  createApproval(hostSessionId, input) {
+  async createApproval(hostSessionId, input) {
     const session = this.registry.getSession(hostSessionId);
     if (!session) {
       const error = new Error(`Unknown session: ${hostSessionId}`);
@@ -33,8 +34,10 @@ class ApprovalService {
         reason: decision.reason,
         controllability: "controllable"
       });
+      const resolvedApproval = this.registry.getApproval(approval.requestId);
+      await this.notifyResolved(resolvedApproval);
       return {
-        approval: this.registry.getApproval(approval.requestId),
+        approval: resolvedApproval,
         autoResolved: true,
         needsHumanFallback: false
       };
@@ -95,10 +98,20 @@ class ApprovalService {
       controllability: "controllable"
     });
 
+    const resolvedApproval = this.registry.getApproval(requestId);
+    await this.notifyResolved(resolvedApproval);
     return {
       ok: true,
-      approval: this.registry.getApproval(requestId)
+      approval: resolvedApproval
     };
+  }
+
+  async notifyResolved(approval) {
+    if (!approval || typeof this.onResolved !== "function") {
+      return;
+    }
+
+    await this.onResolved(approval);
   }
 }
 

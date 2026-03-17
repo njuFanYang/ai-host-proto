@@ -3,7 +3,7 @@
 ## Scope
 
 - [x] Review completed
-- [ ] Redesign implemented
+- [x] Redesign implemented
 - [ ] Safe enough for Feishu dependency
 
 This document reviews how the current host behaves when more than one controller writes to the same managed session.
@@ -25,6 +25,22 @@ It only evaluates whether current write behavior is safe enough once multiple co
 - `src/server.js`
 - `src/host/session-registry.js`
 - `src/host/approval-service.js`
+
+## Implementation Note
+
+The prototype now includes a first-pass host-level session controller and input queue:
+
+- `SessionControlService` persists attached controllers in session metadata.
+- Only one `active-write` controller is allowed unless takeover is explicitly requested.
+- `POST /sessions/{id}/messages` now writes through the host-level input queue instead of calling the transport directly.
+- Inputs are blocked while a session is in `waiting_approval` and resume after approval resolution.
+- Deferred transports such as wrapper-managed IDE sessions now hold later queued inputs until the host receives a fresh `session available` signal.
+- `GET /sessions/{id}/controllers` and `GET /sessions/{id}/inputs` expose the current controller and queue state.
+
+This closes the most immediate multi-controller correctness gap for v1 host-managed sessions.
+It does not yet make the Feishu dependency safe by default, because public ingress isolation and channel binding policy still remain open.
+
+The sections below preserve the original review findings that motivated this redesign. They are no longer a description of the exact current code path in every detail.
 
 ## Current Write Model
 
@@ -271,5 +287,8 @@ This item should remain `P0`.
 ## Status
 
 - [x] Review completed
-- [ ] Redesign implemented
+- [x] Redesign implemented
 - [ ] Safe enough for Feishu dependency
+
+
+
