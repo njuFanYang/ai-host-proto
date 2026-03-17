@@ -300,6 +300,7 @@ test("CodexCliManager records wrapper command completion", async () => {
   const commands = manager.claimWrapperCommands(hostSessionId);
   const completed = manager.completeWrapperCommand(hostSessionId, commands[0].commandId, {
     ok: true,
+    leaseToken: commands[0].leaseToken,
     response: { turn: { id: "turn-wrapper-1" } }
   });
   const lastEvent = registry.listEvents(hostSessionId).at(-1);
@@ -308,3 +309,7 @@ test("CodexCliManager records wrapper command completion", async () => {
   assert.equal(lastEvent.kind, "wrapper_command_completed");
   assert.equal(lastEvent.payload.commandId, commands[0].commandId);
 });
+
+
+
+

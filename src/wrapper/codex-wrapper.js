@@ -101,7 +101,8 @@ function startAppServerProxy(input) {
           ok: !parsed.error,
           response: parsed.result || null,
           error: parsed.error || null,
-          rpcRequestId: parsed.id
+          rpcRequestId: parsed.id,
+          leaseToken: injected.leaseToken
         });
         return;
       }
@@ -181,6 +182,7 @@ function startAppServerProxy(input) {
     await Promise.all(pendingCommands.map((entry) => {
       return completeCommandBestEffort(input.hostUrl, input.hostSessionId, entry.commandId, {
         ok: false,
+        leaseToken: entry.leaseToken,
         error: {
           message: `wrapper proxy stopped before response: ${stopInput.reason || "stopped"}`
         }
@@ -236,7 +238,8 @@ function startAppServerProxy(input) {
         })}\n`);
         await completeCommandBestEffort(input.hostUrl, input.hostSessionId, command.commandId, {
           ok: true,
-          rpcRequestId: command.payload.rpcRequestId
+          rpcRequestId: command.payload.rpcRequestId,
+          leaseToken: command.leaseToken
         });
         return;
       }
@@ -245,7 +248,8 @@ function startAppServerProxy(input) {
         const hostRpcId = `host-${command.commandId}`;
         hostInjectedRequests.set(normalizeRequestId(hostRpcId), {
           commandId: command.commandId,
-          kind: command.kind
+          kind: command.kind,
+          leaseToken: command.leaseToken
         });
         input.child.stdin.write(`${JSON.stringify({
           jsonrpc: "2.0",
@@ -266,6 +270,7 @@ function startAppServerProxy(input) {
 
       await completeCommandBestEffort(input.hostUrl, input.hostSessionId, command.commandId, {
         ok: false,
+        leaseToken: command.leaseToken,
         error: {
           message: `unsupported wrapper command: ${command.kind}`
         }
@@ -273,6 +278,7 @@ function startAppServerProxy(input) {
     } catch (error) {
       await completeCommandBestEffort(input.hostUrl, input.hostSessionId, command.commandId, {
         ok: false,
+        leaseToken: command.leaseToken,
         error: {
           message: error.message
         }
