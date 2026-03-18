@@ -8,7 +8,7 @@ const { ApprovalService } = require("../src/host/approval-service");
 const { PolicyEngine } = require("../src/host/policy-engine");
 const { SessionRegistry } = require("../src/host/session-registry");
 
-test("ApprovalService auto-resolves low risk approvals for exec-json sessions", () => {
+test("ApprovalService auto-resolves low risk approvals for exec-json sessions", async () => {
   const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ai-host-proto-"));
   const registry = new SessionRegistry({ projectRoot });
   const service = new ApprovalService({
@@ -23,7 +23,7 @@ test("ApprovalService auto-resolves low risk approvals for exec-json sessions", 
   });
   registry.updateSession(session.hostSessionId, { status: "running" });
 
-  const result = service.createApproval(session.hostSessionId, {
+  const result = await service.createApproval(session.hostSessionId, {
     riskLevel: "low",
     actionType: "shell",
     summary: "read-only command"
@@ -34,7 +34,7 @@ test("ApprovalService auto-resolves low risk approvals for exec-json sessions", 
   assert.equal(result.approval.decision.decision, "approve");
 });
 
-test("ApprovalService requests human fallback for app-server sessions", () => {
+test("ApprovalService requests human fallback for app-server sessions", async () => {
   const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ai-host-proto-"));
   const registry = new SessionRegistry({ projectRoot });
   const service = new ApprovalService({
@@ -43,13 +43,13 @@ test("ApprovalService requests human fallback for app-server sessions", () => {
   });
 
   const session = registry.createSession({
-    source: "ide",
+    source: "cli",
     transport: "app-server",
     workspaceRoot: projectRoot
   });
   registry.updateSession(session.hostSessionId, { status: "running" });
 
-  const result = service.createApproval(session.hostSessionId, {
+  const result = await service.createApproval(session.hostSessionId, {
     riskLevel: "low",
     actionType: "shell",
     summary: "experimental transport"
@@ -69,13 +69,13 @@ test("ApprovalService allows local human resolution when no transport callback i
   });
 
   const session = registry.createSession({
-    source: "ide",
+    source: "cli",
     transport: "app-server",
     workspaceRoot: projectRoot
   });
   registry.updateSession(session.hostSessionId, { status: "running" });
 
-  const created = service.createApproval(session.hostSessionId, {
+  const created = await service.createApproval(session.hostSessionId, {
     riskLevel: "high",
     actionType: "shell",
     summary: "needs manual decision"
@@ -102,13 +102,13 @@ test("ApprovalService returns fallback when transport callback cannot inject the
   });
 
   const session = registry.createSession({
-    source: "ide",
+    source: "cli",
     transport: "app-server",
     workspaceRoot: projectRoot
   });
   registry.updateSession(session.hostSessionId, { status: "running" });
 
-  const created = service.createApproval(session.hostSessionId, {
+  const created = await service.createApproval(session.hostSessionId, {
     riskLevel: "high",
     actionType: "shell",
     summary: "needs upstream reply"

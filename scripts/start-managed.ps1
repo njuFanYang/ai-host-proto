@@ -1,6 +1,6 @@
 param(
   [Parameter(Mandatory = $true, Position = 0)]
-  [ValidateSet('cli', 'ide')]
+  [ValidateSet('cli')]
   [string]$Target,
 
   [string]$HostUrl = 'http://127.0.0.1:7788',
@@ -13,9 +13,7 @@ param(
   [ValidateSet('read-only', 'workspace-write', 'danger-full-access')]
   [string]$Sandbox = 'read-only',
 
-  [switch]$SkipGitRepoCheck,
-  [switch]$OpenCode,
-  [switch]$NoLaunchCode
+  [switch]$SkipGitRepoCheck
 )
 
 $ErrorActionPreference = 'Stop'
@@ -92,65 +90,10 @@ function Start-ManagedCli {
   }
 }
 
-function Start-ManagedIde {
-  param(
-    [string]$BaseUrl,
-    [string]$SessionCwd,
-    [bool]$ShouldOpenCode
-  )
-
-  $body = @{
-    mode = 'wrapper-managed'
-    cwd = $SessionCwd
-  }
-
-  $result = Invoke-HostJson -Method Post -Uri "$BaseUrl/sessions/ide" -Body $body
-  $wrapperInfo = $result.wrapperLaunchInfo
-
-  if ($ShouldOpenCode) {
-    $codePath = (Get-Command code.cmd -ErrorAction SilentlyContinue).Source
-    if (-not $codePath) {
-      $codePath = (Get-Command code -ErrorAction SilentlyContinue).Source
-    }
-
-    if (-not $codePath) {
-      throw 'VS Code command not found. Install `code` on PATH or rerun with -NoLaunchCode.'
-    }
-
-    $cmd = "set AI_HOST_URL=$($wrapperInfo.hostUrl)&& set AI_HOST_SESSION_ID=$($result.session.hostSessionId)&& `"$codePath`" `"$SessionCwd`""
-    Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', $cmd | Out-Null
-  }
-
-  [pscustomobject]@{
-    target = 'ide'
-    hostSessionId = $result.session.hostSessionId
-    transport = $result.session.transport
-    registrationState = $result.session.registrationState
-    status = $result.session.status
-    workspaceRoot = $result.session.workspaceRoot
-    wrapperPath = $wrapperInfo.wrapperPath
-    hostUrl = $wrapperInfo.hostUrl
-    launchedCode = $ShouldOpenCode
-    note = 'Set VS Code ChatGPT/Codex cliExecutable to the wrapperPath if you want the extension to route through the host.'
-    env = $wrapperInfo.env
-  }
-}
-
 if (-not (Test-HostReady -BaseUrl $HostUrl)) {
   throw "Host is not reachable at $HostUrl. Start it first with: node src/server.js"
 }
 
-if ($Target -eq 'cli') {
-  $result = Start-ManagedCli -BaseUrl $HostUrl -SessionCwd $Cwd -SessionPrompt $Prompt -Mode $CliMode -SandboxMode $Sandbox -SkipRepoCheck $SkipGitRepoCheck.IsPresent
-  $result | ConvertTo-Json -Depth 8
-  exit 0
-}
-
-$shouldOpenCode = $OpenCode.IsPresent
-if (-not $NoLaunchCode.IsPresent -and -not $OpenCode.IsPresent) {
-  $shouldOpenCode = $true
-}
-
-$result = Start-ManagedIde -BaseUrl $HostUrl -SessionCwd $Cwd -ShouldOpenCode $shouldOpenCode
+$result = Start-ManagedCli -BaseUrl $HostUrl -SessionCwd $Cwd -SessionPrompt $Prompt -Mode $CliMode -SandboxMode $Sandbox -SkipRepoCheck $SkipGitRepoCheck.IsPresent
 $result | ConvertTo-Json -Depth 8
 exit 0

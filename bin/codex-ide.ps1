@@ -1,6 +1,0 @@
-﻿param(
-  [Parameter(ValueFromRemainingArguments = $true)]
-  [string[]]$Args
-)
-
-& "$PSScriptRoot\..\scripts\start-managed.ps1" ide @Args

@@ -19,7 +19,6 @@ class SessionRegistry {
     this.records = new Map();
     this.events = new Map();
     this.approvals = new Map();
-    this.wrapperCommands = new Map();
     this.stream = new EventEmitter();
     this.stream.setMaxListeners(0);
     this.loadPersistedSessions();
@@ -53,7 +52,6 @@ class SessionRegistry {
 
     this.records.set(hostSessionId, record);
     this.events.set(hostSessionId, []);
-    this.wrapperCommands.set(hostSessionId, new Map());
     this.persistSession(hostSessionId);
     this.emitMessage({
       type: "session",
@@ -134,224 +132,6 @@ class SessionRegistry {
 
   listEvents(hostSessionId) {
     return (this.events.get(hostSessionId) || []).slice();
-  }
-
-  enqueueWrapperCommand(hostSessionId, input = {}) {
-    const session = this.getSession(hostSessionId);
-    if (!session) {
-      return null;
-    }
-
-    const command = {
-      commandId: createId("wrappercmd"),
-      hostSessionId,
-      kind: input.kind,
-      payload: input.payload || {},
-      status: "queued",
-      createdAt: nowIso(),
-      claimedAt: null,
-      leaseExpiresAt: null,
-      leaseToken: null,
-      retryCount: 0,
-      maxRetries: Number.isInteger(input.maxRetries) ? input.maxRetries : 3,
-      lastError: null,
-      completedAt: null,
-      result: null
-    };
-
-    this.getWrapperCommandMap(hostSessionId).set(command.commandId, command);
-    this.persistSession(hostSessionId);
-    this.appendEvent(hostSessionId, {
-      kind: "wrapper_command_queued",
-      controllability: input.controllability || "controllable",
-      payload: {
-        commandId: command.commandId,
-        kind: command.kind,
-        retryCount: command.retryCount,
-        maxRetries: command.maxRetries
-      }
-    });
-    return { ...command };
-  }
-
-  claimWrapperCommands(hostSessionId, options = {}) {
-    const session = this.getSession(hostSessionId);
-    if (!session) {
-      return [];
-    }
-
-    const now = resolveNow(options.now);
-    this.requeueExpiredWrapperCommands(hostSessionId, {
-      now,
-      reason: options.expiryReason || "lease_expired"
-    });
-
-    const leaseMs = Number.isFinite(options.leaseMs) ? Math.max(1, Number(options.leaseMs)) : 30000;
-    const queued = Array.from(this.getWrapperCommandMap(hostSessionId).values())
-      .filter((command) => command.status === "queued")
-      .sort(sortByCreatedAt);
-
-    const claimed = [];
-    for (const command of queued) {
-      const leaseToken = createId("wrapperlease");
-      const claimedAt = now.toISOString();
-      const leaseExpiresAt = new Date(now.getTime() + leaseMs).toISOString();
-      Object.assign(command, {
-        status: "leased",
-        claimedAt,
-        leaseExpiresAt,
-        leaseToken,
-        lastError: null
-      });
-      claimed.push({ ...command });
-      this.appendEvent(hostSessionId, {
-        kind: "wrapper_command_leased",
-        controllability: "controllable",
-        payload: {
-          commandId: command.commandId,
-          kind: command.kind,
-          leaseToken,
-          claimedAt,
-          leaseExpiresAt,
-          retryCount: command.retryCount
-        }
-      });
-    }
-
-    if (claimed.length > 0) {
-      this.persistSession(hostSessionId);
-    }
-
-    return claimed;
-  }
-
-  completeWrapperCommand(hostSessionId, commandId, input = {}) {
-    const command = this.getWrapperCommandMap(hostSessionId).get(commandId) || null;
-    if (!command) {
-      return null;
-    }
-
-    const leaseToken = input.leaseToken || null;
-    if ((command.status === "completed" || command.status === "failed" || command.status === "abandoned") &&
-      (!leaseToken || command.leaseToken === leaseToken)) {
-      return { ...command };
-    }
-
-    if (command.status !== "leased") {
-      const error = new Error(`Wrapper command ${commandId} is not currently leased`);
-      error.statusCode = 409;
-      error.code = "wrapper_command_not_leased";
-      throw error;
-    }
-
-    if (!leaseToken || command.leaseToken !== leaseToken) {
-      const error = new Error(`Stale wrapper command lease: ${commandId}`);
-      error.statusCode = 409;
-      error.code = "stale_wrapper_command_lease";
-      throw error;
-    }
-
-    command.status = input && input.ok === false ? "failed" : "completed";
-    command.completedAt = nowIso();
-    command.result = input || {};
-    command.lastError = input && input.ok === false
-      ? extractCommandError(input)
-      : null;
-    command.leaseExpiresAt = null;
-
-    this.persistSession(hostSessionId);
-    this.appendEvent(hostSessionId, {
-      kind: command.status === "failed" ? "wrapper_command_failed" : "wrapper_command_completed",
-      controllability: "controllable",
-      payload: {
-        commandId,
-        kind: command.kind,
-        leaseToken: command.leaseToken,
-        ok: command.status !== "failed",
-        result: input || {}
-      }
-    });
-
-    return { ...command };
-  }
-
-  requeueExpiredWrapperCommands(hostSessionId, options = {}) {
-    const session = this.getSession(hostSessionId);
-    if (!session) {
-      return [];
-    }
-
-    const now = resolveNow(options.now);
-    const reason = options.reason || "lease_expired";
-    const changed = [];
-
-    for (const command of Array.from(this.getWrapperCommandMap(hostSessionId).values()).sort(sortByCreatedAt)) {
-      if (command.status !== "leased" || !command.leaseExpiresAt) {
-        continue;
-      }
-
-      if (Date.parse(command.leaseExpiresAt) > now.getTime()) {
-        continue;
-      }
-
-      if (command.retryCount < command.maxRetries) {
-        command.status = "queued";
-        command.retryCount += 1;
-        command.claimedAt = null;
-        command.leaseExpiresAt = null;
-        command.leaseToken = null;
-        command.lastError = reason;
-        changed.push({ ...command });
-        this.appendEvent(hostSessionId, {
-          kind: "wrapper_command_requeued",
-          controllability: "controllable",
-          payload: {
-            commandId: command.commandId,
-            kind: command.kind,
-            retryCount: command.retryCount,
-            maxRetries: command.maxRetries,
-            reason
-          }
-        });
-        continue;
-      }
-
-      command.status = "abandoned";
-      command.completedAt = now.toISOString();
-      command.lastError = reason;
-      command.leaseExpiresAt = null;
-      changed.push({ ...command });
-      this.appendEvent(hostSessionId, {
-        kind: "wrapper_command_abandoned",
-        controllability: "controllable",
-        payload: {
-          commandId: command.commandId,
-          kind: command.kind,
-          retryCount: command.retryCount,
-          maxRetries: command.maxRetries,
-          reason
-        }
-      });
-    }
-
-    if (changed.length > 0) {
-      this.persistSession(hostSessionId);
-    }
-
-    return changed;
-  }
-
-  getWrapperCommand(hostSessionId, commandId) {
-    const command = this.getWrapperCommandMap(hostSessionId).get(commandId) || null;
-    return command ? { ...command } : null;
-  }
-
-  listWrapperCommands(hostSessionId, filter = {}) {
-    let commands = Array.from(this.getWrapperCommandMap(hostSessionId).values());
-    if (filter.status) {
-      commands = commands.filter((command) => command.status === filter.status);
-    }
-    return commands.sort(sortByCreatedAt).map((command) => ({ ...command }));
   }
 
   createApproval(hostSessionId, input) {
@@ -449,8 +229,7 @@ class SessionRegistry {
     const filePath = path.join(this.sessionsDir, `${hostSessionId}.json`);
     const payload = {
       record,
-      events: this.listEvents(hostSessionId),
-      wrapperCommands: this.listWrapperCommands(hostSessionId)
+      events: this.listEvents(hostSessionId)
     };
     fs.writeFileSync(filePath, JSON.stringify(payload, null, 2));
   }
@@ -458,12 +237,12 @@ class SessionRegistry {
   loadPersistedSessions() {
     const files = fs
       .readdirSync(this.sessionsDir, { withFileTypes: true })
-      .filter((entry) => entry.isFile() && entry.name.endsWith('.json'));
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".json"));
 
     for (const file of files) {
       const filePath = path.join(this.sessionsDir, file.name);
       try {
-        const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+        const parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
         if (!parsed || !parsed.record || !parsed.record.hostSessionId) {
           continue;
         }
@@ -471,7 +250,6 @@ class SessionRegistry {
         const hostSessionId = parsed.record.hostSessionId;
         this.records.set(hostSessionId, parsed.record);
         this.events.set(hostSessionId, Array.isArray(parsed.events) ? parsed.events : []);
-        this.wrapperCommands.set(hostSessionId, rebuildWrapperCommandMap(parsed.wrapperCommands));
         this.rebuildApprovalsFromEvents(hostSessionId);
       } catch (_error) {
         // Ignore corrupt session files and keep loading the rest.
@@ -482,19 +260,19 @@ class SessionRegistry {
   rebuildApprovalsFromEvents(hostSessionId) {
     const events = this.listEvents(hostSessionId);
     for (const event of events) {
-      if (event.kind === 'approval_request' && event.payload && event.payload.requestId) {
+      if (event.kind === "approval_request" && event.payload && event.payload.requestId) {
         this.approvals.set(event.payload.requestId, {
           ...event.payload
         });
       }
 
-      if (event.kind === 'approval_result' && event.payload && event.payload.requestId) {
+      if (event.kind === "approval_result" && event.payload && event.payload.requestId) {
         const approval = this.approvals.get(event.payload.requestId);
         if (!approval) {
           continue;
         }
 
-        approval.status = 'resolved';
+        approval.status = "resolved";
         approval.decision = {
           decision: event.payload.decision,
           decidedBy: event.payload.decidedBy,
@@ -507,76 +285,6 @@ class SessionRegistry {
   emitMessage(message) {
     this.stream.emit("message", message);
   }
-
-  getWrapperCommandMap(hostSessionId) {
-    let commands = this.wrapperCommands.get(hostSessionId);
-    if (!commands) {
-      commands = new Map();
-      this.wrapperCommands.set(hostSessionId, commands);
-    }
-    return commands;
-  }
-}
-
-function rebuildWrapperCommandMap(rawCommands) {
-  const commands = new Map();
-  for (const command of Array.isArray(rawCommands) ? rawCommands : []) {
-    if (!command || !command.commandId) {
-      continue;
-    }
-
-    commands.set(command.commandId, {
-      commandId: command.commandId,
-      hostSessionId: command.hostSessionId || null,
-      kind: command.kind || "unknown",
-      payload: command.payload || {},
-      status: command.status || "queued",
-      createdAt: command.createdAt || nowIso(),
-      claimedAt: command.claimedAt || null,
-      leaseExpiresAt: command.leaseExpiresAt || null,
-      leaseToken: command.leaseToken || null,
-      retryCount: Number.isInteger(command.retryCount) ? command.retryCount : 0,
-      maxRetries: Number.isInteger(command.maxRetries) ? command.maxRetries : 3,
-      lastError: command.lastError || null,
-      completedAt: command.completedAt || null,
-      result: command.result || null
-    });
-  }
-  return commands;
-}
-
-function resolveNow(input) {
-  if (input instanceof Date) {
-    return input;
-  }
-
-  if (typeof input === "string" || typeof input === "number") {
-    const date = new Date(input);
-    if (!Number.isNaN(date.getTime())) {
-      return date;
-    }
-  }
-
-  return new Date();
-}
-
-function sortByCreatedAt(left, right) {
-  if (left.createdAt === right.createdAt) {
-    return left.commandId < right.commandId ? -1 : 1;
-  }
-  return left.createdAt < right.createdAt ? -1 : 1;
-}
-
-function extractCommandError(input) {
-  if (input.error && typeof input.error.message === "string") {
-    return input.error.message;
-  }
-
-  if (typeof input.error === "string") {
-    return input.error;
-  }
-
-  return "wrapper_command_failed";
 }
 
 function defaultCapabilities(transport) {
