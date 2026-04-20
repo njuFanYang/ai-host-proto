@@ -29,5 +29,5 @@ if ($UserPath -or -not $SessionOnly) {
   $next = if ($current) { "$binPath;$current" } else { $binPath }
   [Environment]::SetEnvironmentVariable('Path', $next, 'User')
   Write-Output "Added to user PATH: $binPath"
-  Write-Output 'Restart PowerShell/cmd to use codex-cli directly.'
+  Write-Output 'Restart PowerShell/cmd to use claude-cli directly.'
 }

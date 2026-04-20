@@ -40,10 +40,10 @@ function createHarness() {
 
   const session = sessionRegistry.createSession({
     source: "cli",
-    transport: "app-server",
+    transport: "stream-json",
     workspaceRoot: projectRoot,
     runtime: {
-      mode: "app-server"
+      mode: "stream-json"
     }
   });
   sessionRegistry.updateSession(session.hostSessionId, { status: "running" });

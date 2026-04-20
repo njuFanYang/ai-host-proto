@@ -12,10 +12,10 @@ function createHarness() {
   const registry = new SessionRegistry({ projectRoot });
   const session = registry.createSession({
     source: "cli",
-    transport: "app-server",
+    transport: "stream-json",
     workspaceRoot: projectRoot,
     runtime: {
-      mode: "app-server"
+      mode: "stream-json"
     }
   });
   registry.updateSession(session.hostSessionId, { status: "running" });

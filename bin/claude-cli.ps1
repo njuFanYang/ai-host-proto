@@ -1,6 +1,6 @@
-﻿param(
+param(
   [Parameter(ValueFromRemainingArguments = $true)]
   [string[]]$Args
 )
 
-& "$PSScriptRoot\..\scripts\watch-session.ps1" @Args
+& "$PSScriptRoot\..\scripts\start-managed.ps1" cli @Args

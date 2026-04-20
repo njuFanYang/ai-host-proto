@@ -4,16 +4,17 @@ const path = require("node:path");
 const { ApprovalService } = require("./host/approval-service");
 const { ChannelBindingRegistry } = require("./host/channel-binding-registry");
 const { ChannelBindingService } = require("./host/channel-binding-service");
-const { CodexCliManager } = require("./host/codex-cli");
+const { ClaudeCodeManager } = require("./host/claude-code-cli");
 const { PolicyEngine } = require("./host/policy-engine");
 const { SessionControlService } = require("./host/session-control-service");
 const { SessionRegistry } = require("./host/session-registry");
+const { FeishuAdapter } = require("./host/channels/feishu/adapter");
 
 function createHostRuntime(options = {}) {
   const projectRoot = options.projectRoot || path.resolve(__dirname, "..");
   const registry = options.registry || new SessionRegistry({ projectRoot });
   const policyEngine = options.policyEngine || new PolicyEngine();
-  const manager = options.manager || new CodexCliManager({ registry, projectRoot });
+  const manager = options.manager || new ClaudeCodeManager({ registry, projectRoot });
   const sessionControl = options.sessionControl || new SessionControlService({
     registry,
     manager
@@ -21,7 +22,6 @@ function createHostRuntime(options = {}) {
   const approvalService = options.approvalService || new ApprovalService({
     registry,
     policyEngine,
-    decisionHandler: (approval, decision) => manager.handleApprovalDecision(approval, decision),
     onResolved: (approval) => sessionControl.drainQueue(approval.hostSessionId)
   });
   const channelBindingRegistry = options.channelBindingRegistry || new ChannelBindingRegistry({ projectRoot });
@@ -494,11 +494,62 @@ function startDualServer(options = {}) {
     });
   }
 
+  const feishuAdapter = maybeStartFeishuAdapter(runtime, options);
+
   return {
     ...runtime,
     internal,
-    external
+    external,
+    feishuAdapter
   };
+}
+
+function maybeStartFeishuAdapter(runtime, options) {
+  const appId = options.feishuAppId || process.env.FEISHU_APP_ID;
+  const appSecret = options.feishuAppSecret || process.env.FEISHU_APP_SECRET;
+  if (!appId || !appSecret) {
+    return null;
+  }
+
+  const autoCwd = options.feishuAutoSessionCwd || process.env.FEISHU_AUTO_SESSION_CWD || null;
+  const autoSession = autoCwd
+    ? {
+        cwd: autoCwd,
+        permissionMode: options.feishuAutoSessionPermissionMode || process.env.FEISHU_AUTO_SESSION_PERMISSION_MODE || "default",
+        model: options.feishuAutoSessionModel || process.env.FEISHU_AUTO_SESSION_MODEL || null
+      }
+    : null;
+
+  const adapter = new FeishuAdapter({
+    appId,
+    appSecret,
+    encryptKey: options.feishuEncryptKey || process.env.FEISHU_ENCRYPT_KEY || undefined,
+    verificationToken: options.feishuVerificationToken || process.env.FEISHU_VERIFICATION_TOKEN || undefined,
+    bindingRegistry: runtime.channelBindingRegistry,
+    sessionRegistry: runtime.registry,
+    channelBindingService: runtime.channelBindingService,
+    approvalService: runtime.approvalService,
+    manager: runtime.manager,
+    autoSession,
+    threadIsolation: parseBoolean(options.feishuThreadIsolation || process.env.FEISHU_THREAD_ISOLATION, true)
+  });
+
+  adapter.start().catch((error) => {
+    process.stderr.write(`[feishu] adapter failed to start: ${error.message}\n`);
+  });
+
+  return adapter;
+}
+
+function parseBoolean(value, fallback) {
+  if (value === undefined || value === null || value === "") {
+    return fallback;
+  }
+  if (typeof value === "boolean") return value;
+  const normalized = String(value).trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  return fallback;
 }
 
 function isHostRuntime(value) {
@@ -512,6 +563,11 @@ function isHostRuntime(value) {
 }
 
 if (require.main === module) {
+  try {
+    require("dotenv").config({ quiet: true });
+  } catch (_error) {
+    // dotenv is optional at runtime; ignore if missing.
+  }
   startDualServer();
 }
 

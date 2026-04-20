@@ -40,17 +40,17 @@ function createStubRuntime(projectRoot) {
     async launchCliSession(input) {
       const record = registry.createSession({
         source: "cli",
-        transport: input.mode === "tty" ? "tty" : "exec-json",
+        transport: "stream-json",
         workspaceRoot: input.cwd || projectRoot,
         runtime: {
-          mode: input.mode || "exec-json"
+          mode: "stream-json"
         }
       });
       registry.bindUpstreamSession(record.hostSessionId, `thread-${record.hostSessionId}`);
       registry.updateSession(record.hostSessionId, { status: "running" });
       return {
         record,
-        terminalLaunchInfo: input.mode === "tty" ? { mode: "tty", command: "stub" } : null
+        terminalLaunchInfo: null
       };
     },
     async dispatchTransportMessage(hostSessionId, prompt) {
@@ -69,10 +69,10 @@ test("external surface excludes CLI launch endpoints", async () => {
   const runtime = createStubRuntime(projectRoot);
   const session = runtime.registry.createSession({
     source: "cli",
-    transport: "exec-json",
+    transport: "stream-json",
     workspaceRoot: projectRoot,
     runtime: {
-      mode: "exec-json"
+      mode: "stream-json"
     }
   });
   runtime.registry.bindUpstreamSession(session.hostSessionId, "thread-surface-1");
@@ -108,7 +108,7 @@ test("external surface excludes CLI launch endpoints", async () => {
     const forbiddenLaunch = await fetch(`${externalUrl}/sessions/cli`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ cwd: projectRoot, mode: "tty" })
+      body: JSON.stringify({ cwd: projectRoot })
     });
     const forbiddenLaunchBody = await forbiddenLaunch.json();
     assert.equal(forbiddenLaunch.status, 404);
@@ -124,10 +124,10 @@ test("external surface exposes channel binding APIs for CLI sessions", async () 
   const runtime = createStubRuntime(projectRoot);
   const session = runtime.registry.createSession({
     source: "cli",
-    transport: "exec-json",
+    transport: "stream-json",
     workspaceRoot: projectRoot,
     runtime: {
-      mode: "exec-json"
+      mode: "stream-json"
     }
   });
   runtime.registry.bindUpstreamSession(session.hostSessionId, "thread-surface-2");

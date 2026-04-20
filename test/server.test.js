@@ -40,17 +40,17 @@ function createStubRuntime(projectRoot) {
     async launchCliSession(input) {
       const record = registry.createSession({
         source: "cli",
-        transport: input.mode === "tty" ? "tty" : "exec-json",
+        transport: "stream-json",
         workspaceRoot: input.cwd || projectRoot,
         runtime: {
-          mode: input.mode || "exec-json",
-          sandbox: input.sandbox || null
+          mode: "stream-json",
+          permissionMode: input.permissionMode || "default"
         }
       });
-      registry.updateSession(record.hostSessionId, { status: input.mode === "tty" ? "running" : "ended" });
+      registry.updateSession(record.hostSessionId, { status: "ended" });
       return {
         record,
-        terminalLaunchInfo: input.mode === "tty" ? { mode: "tty", command: "stub" } : null
+        terminalLaunchInfo: null
       };
     },
     async dispatchTransportMessage(hostSessionId, prompt) {
@@ -74,14 +74,14 @@ test("host server launches managed CLI sessions over HTTP", async () => {
     const created = await fetch(`${baseUrl}/sessions/cli`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ cwd: projectRoot, mode: "tty", prompt: "inspect" })
+      body: JSON.stringify({ cwd: projectRoot, prompt: "inspect" })
     });
     const body = await created.json();
 
     assert.equal(created.status, 201);
     assert.equal(body.session.source, "cli");
-    assert.equal(body.session.transport, "tty");
-    assert.equal(body.terminalLaunchInfo.mode, "tty");
+    assert.equal(body.session.transport, "stream-json");
+    assert.equal(body.terminalLaunchInfo, null);
   } finally {
     await close(host.server);
   }
@@ -92,11 +92,11 @@ test("host server exposes controller and input queue endpoints for CLI sessions"
   const runtime = createStubRuntime(projectRoot);
   const session = runtime.registry.createSession({
     source: "cli",
-    transport: "exec-json",
+    transport: "stream-json",
     workspaceRoot: projectRoot,
     runtime: {
-      mode: "exec-json",
-      sandbox: "read-only"
+      mode: "stream-json",
+      permissionMode: "default"
     }
   });
   runtime.registry.bindUpstreamSession(session.hostSessionId, "thread-http-cli-1");

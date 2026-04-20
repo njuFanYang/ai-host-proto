@@ -14,7 +14,7 @@ test("SessionRegistry publishes session, event, and approval updates to subscrib
 
   const record = registry.createSession({
     source: "cli",
-    transport: "exec-json",
+    transport: "stream-json",
     workspaceRoot: projectRoot
   });
 

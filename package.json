@@ -2,9 +2,29 @@
   "name": "ai-host-proto",
   "version": "0.1.0",
   "private": true,
-  "description": "Local Codex host prototype",
+  "description": "Local Claude Code session host with channel bindings",
   "scripts": {
     "start": "node src/server.js",
     "test": "node --test"
+  },
+  "main": "index.js",
+  "directories": {
+    "doc": "docs",
+    "test": "test"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/njuFanYang/ai-host-proto.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/njuFanYang/ai-host-proto/issues"
+  },
+  "homepage": "https://github.com/njuFanYang/ai-host-proto#readme",
+  "dependencies": {
+    "@larksuiteoapi/node-sdk": "^1.61.0",
+    "dotenv": "^17.4.2"
   }
 }

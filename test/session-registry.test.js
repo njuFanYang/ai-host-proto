@@ -12,7 +12,7 @@ test("SessionRegistry creates host-managed sessions with deferred upstream bindi
 
   const record = registry.createSession({
     source: "cli",
-    transport: "exec-json",
+    transport: "stream-json",
     workspaceRoot: projectRoot
   });
 
@@ -32,7 +32,7 @@ test("SessionRegistry marks session waiting on approval and returns to running o
 
   const record = registry.createSession({
     source: "cli",
-    transport: "exec-json",
+    transport: "stream-json",
     workspaceRoot: projectRoot
   });
 
@@ -59,7 +59,7 @@ test("SessionRegistry reloads persisted sessions and approvals from disk", () =>
 
   const record = registry.createSession({
     source: "cli",
-    transport: "exec-json",
+    transport: "stream-json",
     workspaceRoot: projectRoot
   });
   registry.updateSession(record.hostSessionId, { status: "running" });

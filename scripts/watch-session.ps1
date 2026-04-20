@@ -53,14 +53,16 @@ function Format-EventLine {
 
   $summary = switch ($Event.kind) {
     'assistant_output' { $Event.payload.text }
-    'assistant_output_delta' { $Event.payload.delta }
+    'assistant_thinking' { "(thinking) $($Event.payload.text)" }
     'user_input' { $Event.payload.text }
+    'tool_call' { "$($Event.payload.name) $(($Event.payload.input | ConvertTo-Json -Compress -Depth 5))" }
+    'tool_result' { if ($Event.payload.isError) { "(error) $($Event.payload.toolUseId)" } else { "$($Event.payload.toolUseId)" } }
     'stderr' { $Event.payload.line }
     'approval_request' { "$($Event.payload.riskLevel) $($Event.payload.actionType) $($Event.payload.summary)" }
     'approval_result' { "$($Event.payload.decision) by $($Event.payload.decidedBy)" }
     'session_started' { ($Event.payload | ConvertTo-Json -Compress -Depth 5) }
     'session_ended' { ($Event.payload | ConvertTo-Json -Compress -Depth 5) }
-    'wrapper_runtime_reported' { "pid=$($Event.payload.processId) realCodex=$($Event.payload.realCodex)" }
+    'turn_completed' { "num_turns=$($Event.payload.num_turns) cost=$($Event.payload.total_cost_usd)" }
     default { ($Event.payload | ConvertTo-Json -Compress -Depth 5) }
   }
 
@@ -82,11 +84,11 @@ function Write-SessionSummary {
   if ($Session.runtime.processId) {
     Write-Output "ProcessId:    $($Session.runtime.processId)"
   }
-  if ($Session.runtime.realCodex) {
-    Write-Output "Real Codex:   $($Session.runtime.realCodex)"
+  if ($Session.runtime.permissionMode) {
+    Write-Output "PermissionMode: $($Session.runtime.permissionMode)"
   }
-  if ($Session.runtime.proxyMode) {
-    Write-Output "Proxy Mode:   $($Session.runtime.proxyMode)"
+  if ($Session.runtime.model) {
+    Write-Output "Model:        $($Session.runtime.model)"
   }
   if ($Session.runtime.launchedAt) {
     Write-Output "Launched At:  $($Session.runtime.launchedAt)"

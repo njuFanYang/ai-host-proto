@@ -231,7 +231,7 @@ class SessionRegistry {
       record,
       events: this.listEvents(hostSessionId)
     };
-    fs.writeFileSync(filePath, JSON.stringify(payload, null, 2));
+    fs.writeFileSync(filePath, JSON.stringify(payload, safeReplacer(), 2));
   }
 
   loadPersistedSessions() {
@@ -287,30 +287,28 @@ class SessionRegistry {
   }
 }
 
+function safeReplacer() {
+  const seen = new WeakSet();
+  return (_key, value) => {
+    if (typeof value === "object" && value !== null) {
+      if (seen.has(value)) {
+        return "[Circular]";
+      }
+      seen.add(value);
+    }
+    return value;
+  };
+}
+
 function defaultCapabilities(transport) {
   switch (transport) {
-    case "exec-json":
+    case "stream-json":
       return {
         sessionRegistration: "supported",
         outputCollection: "complete",
         messageInjection: "supported",
         autoHitl: "supported"
       };
-    case "sdk/thread":
-      return {
-        sessionRegistration: "supported",
-        outputCollection: "complete",
-        messageInjection: "supported",
-        autoHitl: "supported"
-      };
-    case "app-server":
-      return {
-        sessionRegistration: "supported",
-        outputCollection: "complete",
-        messageInjection: "supported",
-        autoHitl: "poc"
-      };
-    case "tty":
     default:
       return {
         sessionRegistration: "supported",

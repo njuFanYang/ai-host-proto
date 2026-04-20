@@ -7,13 +7,10 @@ param(
   [string]$Cwd = (Get-Location).Path,
   [string]$Prompt = '',
 
-  [ValidateSet('tty', 'exec-json', 'sdk', 'app-server')]
-  [string]$CliMode = 'tty',
+  [ValidateSet('default', 'acceptEdits', 'bypassPermissions', 'plan')]
+  [string]$PermissionMode = 'default',
 
-  [ValidateSet('read-only', 'workspace-write', 'danger-full-access')]
-  [string]$Sandbox = 'read-only',
-
-  [switch]$SkipGitRepoCheck
+  [string]$Model = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -48,26 +45,21 @@ function Start-ManagedCli {
     [string]$BaseUrl,
     [string]$SessionCwd,
     [string]$SessionPrompt,
-    [string]$Mode,
-    [string]$SandboxMode,
-    [bool]$SkipRepoCheck
+    [string]$SessionPermissionMode,
+    [string]$SessionModel
   )
 
   $body = @{
-    mode = $Mode
     cwd = $SessionCwd
+    permissionMode = $SessionPermissionMode
   }
 
   if ($SessionPrompt) {
     $body.prompt = $SessionPrompt
   }
 
-  if ($Mode -ne 'tty') {
-    $body.sandbox = $SandboxMode
-  }
-
-  if ($Mode -eq 'exec-json') {
-    $body.skipGitRepoCheck = $SkipRepoCheck
+  if ($SessionModel) {
+    $body.model = $SessionModel
   }
 
   $result = Invoke-HostJson -Method Post -Uri "$BaseUrl/sessions/cli" -Body $body
@@ -79,14 +71,10 @@ function Start-ManagedCli {
     status = $result.session.status
     workspaceRoot = $result.session.workspaceRoot
     terminalLaunchInfo = $result.terminalLaunchInfo
-    next = if ($Mode -eq 'tty') {
-      @('A managed tty Codex window should open separately.')
-    } else {
-      @(
-        "Invoke-RestMethod $BaseUrl/sessions/$($result.session.hostSessionId)",
-        "Invoke-RestMethod $BaseUrl/sessions/$($result.session.hostSessionId)/events"
-      )
-    }
+    next = @(
+      "Invoke-RestMethod $BaseUrl/sessions/$($result.session.hostSessionId)",
+      "Invoke-RestMethod $BaseUrl/sessions/$($result.session.hostSessionId)/events"
+    )
   }
 }
 
@@ -94,6 +82,6 @@ if (-not (Test-HostReady -BaseUrl $HostUrl)) {
   throw "Host is not reachable at $HostUrl. Start it first with: node src/server.js"
 }
 
-$result = Start-ManagedCli -BaseUrl $HostUrl -SessionCwd $Cwd -SessionPrompt $Prompt -Mode $CliMode -SandboxMode $Sandbox -SkipRepoCheck $SkipGitRepoCheck.IsPresent
+$result = Start-ManagedCli -BaseUrl $HostUrl -SessionCwd $Cwd -SessionPrompt $Prompt -SessionPermissionMode $PermissionMode -SessionModel $Model
 $result | ConvertTo-Json -Depth 8
 exit 0
